@@ -222,6 +222,30 @@ export interface Evolu<S extends EvoluSchema = EvoluSchema> extends Disposable {
   readonly getQueryRows: <R extends Row>(query: Query<R>) => QueryRows<R>;
 
   /**
+   * Subscribe to {@link SyncState} changes.
+   *
+   * ### Example
+   *
+   * ```ts
+   * const unsubscribe = evolu.subscribeSyncState(() => {
+   *   const syncState = evolu.getSyncState();
+   * });
+   * ```
+   */
+  readonly subscribeSyncState: StoreSubscribe;
+
+  /**
+   * Get {@link SyncState}.
+   *
+   * ### Example
+   *
+   * ```ts
+   * const syncState = evolu.getSyncState();
+   * ```
+   */
+  readonly getSyncState: () => SyncState;
+
+  /**
    * Promise that resolves to {@link AppOwner} when available.
    *
    * Note: With web-only deps, this promise will not resolve during SSR because
@@ -664,6 +688,11 @@ const createEvoluInstance =
           break;
         }
 
+        case "onSyncState": {
+          _syncStore.set(message.state);
+          break;
+        }
+
         default:
           exhaustiveCheck(message);
       }
@@ -858,9 +887,8 @@ const createEvoluInstance =
 
       appOwner,
 
-      // TODO: Update it for the owner-api
-      // subscribeSyncState: syncStore.subscribe,
-      // getSyncState: syncStore.get,
+      subscribeSyncState: _syncStore.subscribe,
+      getSyncState: _syncStore.get,
 
       insert: createMutation("insert"),
       update: createMutation("update"),

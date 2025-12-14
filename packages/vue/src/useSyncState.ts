@@ -1,10 +1,9 @@
 import { SyncState } from "@evolu/common/local-first";
-import { Ref } from "vue";
-// import { useEvolu } from "./useEvolu.js";
+import { onScopeDispose, Ref, ref } from "vue";
+import { useEvolu } from "./useEvolu.js";
 
 /** Subscribe to {@link SyncState} changes. */
 export const useSyncState = (): Ref<SyncState> => {
-  /*
   const evolu = useEvolu();
 
   const syncState = ref(evolu.getSyncState());
@@ -14,8 +13,4 @@ export const useSyncState = (): Ref<SyncState> => {
   onScopeDispose(unsubscribe);
 
   return syncState;
-   */
-
-  // not updated in the Evolu core yet
-  throw new Error("TODO");
 };

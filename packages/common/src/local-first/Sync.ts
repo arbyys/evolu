@@ -137,6 +137,8 @@ export interface SyncConfig {
    */
   readonly disposalDelayMs?: number;
 
+  readonly onSyncState: (state: SyncState) => void;
+
   readonly onError: (
     error:
       | ProtocolError
@@ -169,6 +171,16 @@ export const createSync =
   ) =>
   (config: SyncConfig): Result<Sync, SqliteError> => {
     let isDisposed = false;
+
+    let stats: SyncStats = {
+      estimatedUploadBytes: 0,
+      uploadedBytes: 0,
+      downloadedBytes: 0,
+    };
+
+    const updateSyncState = (state: SyncState) => {
+      config.onSyncState(state);
+    };
 
     /** Returns owner data only if actively assigned to at least one transport. */
     const getSyncOwner = (ownerId: OwnerId): SyncOwner | null => {
@@ -210,8 +222,21 @@ export const createSync =
               SubscriptionFlags.Subscribe,
             );
             if (!message) continue;
+
+            stats = {
+              ...stats,
+              estimatedUploadBytes: stats.estimatedUploadBytes + message.byteLength,
+            };
+            updateSyncState({ type: "SyncStateIsSyncing", stats });
+
             deps.console.log("[sync]", "send", { message });
             webSocket.send(message);
+
+            stats = {
+              ...stats,
+              uploadedBytes: stats.uploadedBytes + message.byteLength,
+            };
+            updateSyncState({ type: "SyncStateIsSyncing", stats });
           }
         },
 
@@ -236,6 +261,13 @@ export const createSync =
           if (!webSocket) return;
 
           const input = new Uint8Array(data);
+
+          stats = {
+            ...stats,
+            downloadedBytes: stats.downloadedBytes + input.byteLength,
+          };
+          updateSyncState({ type: "SyncStateIsSyncing", stats });
+
           deps.console.log("[sync]", "onMessage", {
             transportKey,
             message: input,
@@ -257,6 +289,10 @@ export const createSync =
                   break;
                 case "no-response":
                   // Sync complete, no response needed
+                  updateSyncState({
+                    type: "SyncStateIsSynced",
+                    time: deps.time.now() as Millis,
+                  });
                   break;
                 case "broadcast":
                   // This was a broadcast message, don't affect sync counter
@@ -919,8 +955,15 @@ export interface SyncStateInitial {
   readonly type: "SyncStateInitial";
 }
 
+export interface SyncStats {
+  readonly estimatedUploadBytes: number;
+  readonly uploadedBytes: number;
+  readonly downloadedBytes: number;
+}
+
 export interface SyncStateIsSyncing {
   readonly type: "SyncStateIsSyncing";
+  readonly stats?: SyncStats;
 }
 
 export interface SyncStateIsSynced {

@@ -64,6 +64,7 @@ import {
   createSync,
   SyncDep,
   SyncOwner,
+  SyncState,
   tryApplyQuarantinedMessages,
 } from "./Sync.js";
 import {
@@ -300,6 +301,10 @@ export type DbWorkerOutput =
       readonly reload: boolean;
     }
   | {
+      readonly type: "onSyncState";
+      readonly state: SyncState;
+    }
+  | {
       readonly type: "onExport";
       readonly onCompleteId: CallbackId;
       readonly file: Uint8Array;
@@ -446,6 +451,9 @@ const createDbWorkerDeps = async (
       },
       onReceive: () => {
         postMessage({ type: "refreshQueries" });
+      },
+      onSyncState: (state) => {
+        postMessage({ type: "onSyncState", state });
       },
     });
     if (!sync.ok) return sync;

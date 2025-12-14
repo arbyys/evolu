@@ -19,6 +19,7 @@ import {
 } from "@evolu/common";
 import { evoluWebDeps } from "@evolu/web";
 import { provideEvolu, useQuery } from "@evolu/vue";
+import SyncStatus from "./components/SyncStatus.vue";
 
 const TodoId = id("Todo");
 type TodoId = typeof TodoId.Type;
@@ -174,6 +175,7 @@ function onPriorityChange(event: Event, id: TodoId) {
 
 <template>
   <main>
+    <SyncStatus />
     <h1>Categories</h1>
     <table>
       <thead>

@@ -27,6 +27,7 @@ export type {
   SyncStateIsNotSynced,
   SyncStateIsSynced,
   SyncStateIsSyncing,
+  SyncStats,
 } from "./Sync.js";
 export {
   Timestamp,
