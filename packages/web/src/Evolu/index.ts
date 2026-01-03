@@ -12,8 +12,10 @@ import {
   EvoluDeps,
 } from "@evolu/common/evolu";
 import { createSharedWebWorker } from "../SharedWebWorker.js";
-import { createWebAuthnStore } from "./LocalAuth.js";
+import { createWebAuthnStore, isPrfSupported } from "./LocalAuth.js";
 import { reloadApp } from "./Platform.js";
+
+export { isPrfSupported };
 
 const randomBytes = createRandomBytes();
 const symmetricCrypto = createSymmetricCrypto({ randomBytes });
