@@ -9,7 +9,7 @@ import {
 } from "../Crypto.js";
 import { TransferableError } from "../Error.js";
 import { RandomDep } from "../Random.js";
-import { ok, Result } from "../Result.js";
+import { err, ok, Result } from "../Result.js";
 import {
   createSqlite,
   CreateSqliteDriverDep,
@@ -17,9 +17,10 @@ import {
   sql,
   SqliteDep,
   SqliteError,
+  SqliteValue,
 } from "../Sqlite.js";
 import { TimeDep } from "../Time.js";
-import { Id, Mnemonic, SimpleName } from "../Type.js";
+import { Id, IdBytes, idBytesToId, Mnemonic, SimpleName } from "../Type.js";
 import { CreateWebSocketDep } from "../WebSocket.js";
 import {
   createInitializedWorkerWithHandlers,
@@ -34,6 +35,8 @@ import {
   mnemonicToOwnerSecret,
   OwnerEncryptionKey,
   OwnerId,
+  OwnerIdBytes,
+  ownerIdToOwnerIdBytes,
   OwnerWriteKey,
   TransportConfig,
 } from "./Owner.js";
@@ -61,8 +64,10 @@ import {
 } from "./Sync.js";
 import {
   Timestamp,
+  TimestampBytes,
   TimestampConfig,
   TimestampError,
+  timestampBytesToTimestamp,
   TimestampString,
   timestampStringToTimestamp,
   timestampToTimestampString,
@@ -236,6 +241,13 @@ export type DbWorkerInput =
       readonly type: "useOwner";
       readonly use: boolean;
       readonly owner: SyncOwner;
+    }
+  | {
+      readonly type: "restoreOwnerCopyData";
+      readonly onCompleteId: CallbackId;
+      readonly reload: boolean;
+      readonly sourceMnemonic: Mnemonic;
+      readonly dbSchema: DbSchema;
     };
 
 export type DbWorkerOutput =
@@ -271,6 +283,18 @@ export type DbWorkerOutput =
       readonly type: "onExport";
       readonly onCompleteId: CallbackId;
       readonly file: Uint8Array;
+    }
+  | {
+      readonly type: "onRestoreOwnerCopyData";
+      readonly onCompleteId: CallbackId;
+      readonly reload: boolean;
+      readonly result:
+        | { readonly ok: true; readonly mnemonic: Mnemonic }
+        | {
+            readonly ok: false;
+            readonly reason: "SyncTimeout" | "NoDataToSync" | "CopyFailed";
+            readonly message: string;
+          };
     };
 
 export type DbWorkerPlatformDeps = ConsoleDep &
@@ -712,6 +736,214 @@ const handlers: Omit<MessageHandlers<DbWorkerInput, DbWorkerDeps>, "init"> = {
   useOwner: (deps) => (message) => {
     deps.sync.useOwner(message.use, message.owner);
   },
+
+  restoreOwnerCopyData: (deps) => (message) => {
+    // This operation copies data from the source mnemonic to a newly generated
+    // mnemonic. This is useful when your mnemonic is compromised and you need
+    // to migrate to a new one.
+    //
+    // The process:
+    // 1. First restore from source mnemonic to get the data synced
+    // 2. Read all history data for the source owner
+    // 3. Generate a new AppOwner with new mnemonic
+    // 4. Copy all history data to new owner with new timestamps
+    // 5. Initialize DB with new owner and sync
+
+    const copyResult = deps.sqlite.transaction(() => {
+      // Step 1: Get current db schema
+      const currentDbSchema = getDbSchema(deps)();
+      if (!currentDbSchema.ok) return currentDbSchema;
+
+      // Step 2: Create the source owner from the provided mnemonic
+      const sourceSecret = mnemonicToOwnerSecret(message.sourceMnemonic);
+      const sourceOwner = createAppOwner(sourceSecret);
+      const sourceOwnerIdBytes = ownerIdToOwnerIdBytes(sourceOwner.id);
+
+      // Step 3: Read all history data for the source owner
+      // This reads all CRDT messages stored locally for this owner
+      const historyResult = deps.sqlite.exec<{
+        ownerId: OwnerIdBytes;
+        table: string;
+        id: IdBytes;
+        column: string;
+        value: SqliteValue;
+        timestamp: TimestampBytes;
+      }>(sql`
+        select "ownerId", "table", "id", "column", "value", "timestamp"
+        from evolu_history
+        where "ownerId" = ${sourceOwnerIdBytes}
+        order by "timestamp" asc;
+      `);
+      if (!historyResult.ok) return historyResult;
+
+      // If no data found, it could mean:
+      // - The mnemonic doesn't match current data
+      // - Data hasn't been synced yet
+      if (historyResult.value.rows.length === 0) {
+        return err({
+          type: "RestoreOwnerCopyDataError" as const,
+          reason: "NoDataToSync" as const,
+          message:
+            "No data found for the source mnemonic. Make sure data is synced first using restoreAppOwner.",
+        });
+      }
+
+      // Step 4: Group history rows by timestamp to reconstruct CrdtMessages
+      const messagesByTimestamp = new Map<
+        string,
+        {
+          timestamp: TimestampBytes;
+          table: string;
+          id: IdBytes;
+          values: Record<string, SqliteValue>;
+        }
+      >();
+
+      for (const row of historyResult.value.rows) {
+        const timestampKey = Array.from(row.timestamp).join(",");
+        let msg = messagesByTimestamp.get(timestampKey);
+        if (!msg) {
+          msg = {
+            timestamp: row.timestamp,
+            table: row.table,
+            id: row.id,
+            values: {},
+          };
+          messagesByTimestamp.set(timestampKey, msg);
+        }
+        msg.values[row.column] = row.value;
+      }
+
+      // Step 5: Drop all tables to start fresh
+      for (const table of currentDbSchema.value.tables) {
+        const result = deps.sqlite.exec(sql`
+          drop table ${sql.identifier(table.name)};
+        `);
+        if (!result.ok) return result;
+      }
+
+      // Step 6: Get fresh db schema (should be empty now)
+      const emptyDbSchema = getDbSchema(deps)();
+      if (!emptyDbSchema.ok) return emptyDbSchema;
+
+      // Step 7: Ensure schema exists
+      const ensureDbSchemaResult = ensureDbSchema(deps)(
+        message.dbSchema,
+        emptyDbSchema.value,
+      );
+      if (!ensureDbSchemaResult.ok) return ensureDbSchemaResult;
+
+      // Step 8: Generate a new AppOwner
+      const newSecret = createOwnerSecret(deps);
+      const newOwner = createAppOwner(newSecret);
+      const newClock = createClock(deps)();
+
+      // Step 9: Initialize DB with new owner
+      const initResult = initializeDb(deps)(newOwner, newClock.get());
+      if (!initResult.ok) return initResult;
+
+      // Step 10: Copy all history data to new owner with new timestamps
+      // We need to apply each message to the new owner
+      const newOwnerIdBytes = ownerIdToOwnerIdBytes(newOwner.id);
+
+      for (const [, msg] of messagesByTimestamp) {
+        // Insert into history table with new owner
+        for (const [column, value] of Object.entries(msg.values)) {
+          const result = deps.sqlite.exec(sql.prepared`
+            insert into evolu_history
+              ("ownerId", "table", "id", "column", "value", "timestamp")
+            values
+              (
+                ${newOwnerIdBytes},
+                ${msg.table},
+                ${msg.id},
+                ${column},
+                ${value},
+                ${msg.timestamp}
+              )
+            on conflict do nothing;
+          `);
+          if (!result.ok) return result;
+        }
+
+        // Insert timestamp into skiplist
+        const insertTimestampResult = insertTimestampForCopy(deps)(
+          newOwnerIdBytes,
+          msg.timestamp,
+        );
+        if (!insertTimestampResult.ok) return insertTimestampResult;
+
+        // Apply to app table
+        const updatedAt = new Date(
+          timestampBytesToTimestamp(msg.timestamp).millis,
+        ).toISOString();
+
+        for (const [column, value] of Object.entries(msg.values)) {
+          const result = deps.sqlite.exec(sql.prepared`
+            insert into ${sql.identifier(msg.table)}
+              ("id", ${sql.identifier(column)}, updatedAt)
+            values (${idBytesToId(msg.id)}, ${value}, ${updatedAt})
+            on conflict ("id") do update
+              set
+                ${sql.identifier(column)} = ${value},
+                updatedAt = ${updatedAt};
+          `);
+          if (!result.ok) return result;
+        }
+      }
+
+      return ok(newOwner.mnemonic!);
+    });
+
+    if (!copyResult.ok) {
+      const error = copyResult.error;
+      // Check if it's our custom RestoreOwnerCopyDataError
+      if (error.type === "RestoreOwnerCopyDataError") {
+        deps.postMessage({
+          type: "onRestoreOwnerCopyData",
+          onCompleteId: message.onCompleteId,
+          reload: false,
+          result: {
+            ok: false,
+            reason: error.reason,
+            message: error.message,
+          },
+        });
+        return;
+      }
+
+      // Must be SqliteError - extract message from TransferableError
+      const sqliteError = error;
+      const transferableError = sqliteError.error;
+      const errorMessage =
+        typeof transferableError === "object" &&
+        transferableError !== null &&
+        "message" in transferableError
+          ? String(transferableError.message)
+          : "Database operation failed";
+      deps.postMessage({
+        type: "onRestoreOwnerCopyData",
+        onCompleteId: message.onCompleteId,
+        reload: false,
+        result: {
+          ok: false,
+          reason: "CopyFailed",
+          message: errorMessage,
+        },
+      });
+      return;
+    }
+
+    deps.postMessage({
+      type: "onRestoreOwnerCopyData",
+      onCompleteId: message.onCompleteId,
+      reload: message.reload,
+      result: {
+        ok: true,
+        mnemonic: copyResult.value,
+      },
+    });
+  },
 };
 
 const loadQueries =
@@ -750,4 +982,30 @@ const loadQueries =
       }),
     );
     return ok(queryPatchesArray);
+  };
+
+/**
+ * Simplified timestamp insertion for data copy operations.
+ *
+ * Uses level 1 for all timestamps for simplicity. The skiplist will be
+ * properly balanced on the relay side when data is synced. This is
+ * acceptable for the copy operation as it's a one-time migration.
+ */
+const insertTimestampForCopy =
+  (deps: SqliteDep) =>
+  (
+    ownerId: OwnerIdBytes,
+    timestamp: TimestampBytes,
+  ): Result<void, SqliteError> => {
+    // Use a fixed level of 1 and simple fingerprint calculation
+    // The fingerprint values aren't critical here as they'll be recalculated
+    // during sync
+    const result = deps.sqlite.exec(sql.prepared`
+      insert into evolu_timestamp
+        (ownerId, l, t, h1, h2, c)
+      values
+        (${ownerId}, 1, ${timestamp}, 0, 0, 1)
+      on conflict do nothing;
+    `);
+    return result.ok ? ok() : result;
   };

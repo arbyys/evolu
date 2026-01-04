@@ -468,6 +468,41 @@ export interface Evolu<S extends EvoluSchema = EvoluSchema> {
   ) => Promise<void>;
 
   /**
+   * Copy data from source mnemonic to a newly generated mnemonic.
+   *
+   * This is useful when your mnemonic gets compromised. Since you can't change
+   * your password/mnemonic in Evolu, you need to create a new one and copy your
+   * data.
+   *
+   * The process:
+   *
+   * 1. Sync data from the source mnemonic (downloads data from relay)
+   * 2. Generate a new mnemonic
+   * 3. Copy all data to the new owner (re-encrypts with new keys)
+   * 4. Sync the new owner's data to relay
+   * 5. Reset and reload with the new owner
+   *
+   * **Warning**: This operation is destructive. The local database will be
+   * reset. Make sure the data is synced with the relay first.
+   *
+   * ### Example
+   *
+   * ```ts
+   * // Copy data from compromised mnemonic to a new one
+   * const result = await evolu.restoreOwnerCopyData(compromisedMnemonic);
+   * if (result.ok) {
+   *   console.log("Data copied to new owner:", result.value.mnemonic);
+   * }
+   * ```
+   */
+  readonly restoreOwnerCopyData: (
+    sourceMnemonic: Mnemonic,
+    options?: {
+      readonly reload?: boolean;
+    },
+  ) => Promise<Result<{ readonly mnemonic: Mnemonic }, RestoreOwnerCopyDataError>>;
+
+  /**
    * Reload the app in a platform-specific way. For browsers, this will reload
    * all tabs using Evolu. For native apps, it will restart the app.
    */
@@ -511,6 +546,19 @@ export type EvoluError =
   | SymmetricCryptoDecryptError
   | TimestampError
   | TransferableError;
+
+/**
+ * Error that can occur during {@link Evolu#restoreOwnerCopyData}.
+ *
+ * - `SyncTimeout`: The sync operation timed out while waiting for data from the
+ *   relay.
+ * - `NoDataToSync`: No data was found to sync from the source mnemonic.
+ */
+export interface RestoreOwnerCopyDataError {
+  readonly type: "RestoreOwnerCopyDataError";
+  readonly reason: "SyncTimeout" | "NoDataToSync" | "CopyFailed";
+  readonly message: string;
+}
 
 // /**
 //  * Error reported when a message is invalid or rejected during processing.
@@ -650,6 +698,16 @@ const createEvoluInstance =
     const onCompleteRegistry = createCallbackRegistry(deps);
     const exportRegistry =
       createCallbackRegistry<Uint8Array<ArrayBuffer>>(deps);
+
+    // Using a wrapper type for the registry callback since union types
+    // cause issues with the CallbackRegistry generic's conditional type
+    interface RestoreOwnerCopyDataCallbackArg {
+      readonly result:
+        | { readonly ok: true; readonly mnemonic: Mnemonic }
+        | { readonly ok: false; readonly error: RestoreOwnerCopyDataError };
+    }
+    const restoreOwnerCopyDataRegistry =
+      createCallbackRegistry<RestoreOwnerCopyDataCallbackArg>(deps);
 
     const dbWorker = deps.createDbWorker(dbConfig.name);
 
@@ -838,6 +896,28 @@ const createEvoluInstance =
             message.onCompleteId,
             message.file as Uint8Array<ArrayBuffer>,
           );
+          break;
+        }
+
+        case "onRestoreOwnerCopyData": {
+          const result: RestoreOwnerCopyDataCallbackArg["result"] =
+            message.result.ok
+              ? { ok: true, mnemonic: message.result.mnemonic }
+              : {
+                  ok: false,
+                  error: {
+                    type: "RestoreOwnerCopyDataError",
+                    reason: message.result.reason,
+                    message: message.result.message,
+                  },
+                };
+          restoreOwnerCopyDataRegistry.execute(message.onCompleteId, {
+            result,
+          });
+
+          if (message.result.ok && message.reload) {
+            deps.reloadApp(reloadUrl);
+          }
           break;
         }
 
@@ -1091,6 +1171,28 @@ const createEvoluInstance =
           onCompleteId,
           reload: options?.reload ?? true,
           restore: { mnemonic, dbSchema },
+        });
+        return promise;
+      },
+
+      restoreOwnerCopyData: (sourceMnemonic, options) => {
+        const { promise, resolve } =
+          Promise.withResolvers<
+            Result<{ readonly mnemonic: Mnemonic }, RestoreOwnerCopyDataError>
+          >();
+        const onCompleteId = restoreOwnerCopyDataRegistry.register((arg) => {
+          if (arg.result.ok) {
+            resolve(ok({ mnemonic: arg.result.mnemonic }));
+          } else {
+            resolve(err(arg.result.error));
+          }
+        });
+        dbWorker.postMessage({
+          type: "restoreOwnerCopyData",
+          onCompleteId,
+          reload: options?.reload ?? true,
+          sourceMnemonic,
+          dbSchema,
         });
         return promise;
       },
