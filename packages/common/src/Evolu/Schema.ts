@@ -310,6 +310,73 @@ export interface MutationChange extends DbChange {
 }
 
 /**
+ * Represents a bulk update operation for local-only tables.
+ *
+ * Local-only tables are prefixed with underscore (e.g., `_todos`). Bulk updates
+ * are only allowed on these tables because they don't generate CRDT messages,
+ * which would be problematic for synced tables.
+ */
+export interface BulkUpdateChange {
+  readonly table: string;
+  readonly values: Record<string, SqliteValue>;
+  readonly where: BulkUpdateWhere;
+}
+
+/**
+ * Where clause for bulk update operations.
+ *
+ * Supports simple equality conditions. For more complex conditions, use
+ * individual updates.
+ */
+export type BulkUpdateWhere = ReadonlyArray<BulkUpdateWhereCondition>;
+
+export interface BulkUpdateWhereCondition {
+  readonly column: string;
+  readonly op: "=" | "!=" | "<" | "<=" | ">" | ">=";
+  readonly value: SqliteValue;
+}
+
+/**
+ * Options for bulk update operations.
+ */
+export interface BulkUpdateOptions {
+  /**
+   * Called after the bulk update is completed and the local state is updated.
+   * Receives the number of rows affected by the update.
+   */
+  readonly onComplete?: (changes: number) => void;
+}
+
+/**
+ * Bulk update method signature for local-only tables.
+ *
+ * Only tables prefixed with underscore (local-only tables) are allowed because
+ * bulk updates don't generate CRDT messages, which would risk generating too
+ * many messages for synced tables.
+ *
+ * Returns a Result indicating if the operation was accepted. The actual number
+ * of affected rows is provided via the `onComplete` callback.
+ */
+export type BulkUpdate<S extends EvoluSchema> = <
+  TableName extends keyof S & `_${string}`,
+>(
+  table: TableName,
+  values: Partial<{
+    [Column in keyof Omit<S[TableName], "id">]: InferInput<S[TableName][Column]>;
+  }>,
+  where: BulkUpdateWhere,
+  options?: BulkUpdateOptions,
+) => Result<void, BulkUpdateError>;
+
+/**
+ * Error returned when bulk update validation fails.
+ */
+export interface BulkUpdateError {
+  readonly type: "BulkUpdateError";
+  readonly message: string;
+}
+
+/**
  * Type Factory to create insertable {@link Type}. It makes nullable Types
  * optional, omits Id, and ensures the {@link maxMutationSize}.
  *

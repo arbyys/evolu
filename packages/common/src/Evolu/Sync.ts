@@ -15,7 +15,14 @@ import { objectToEntries } from "../Object.js";
 import { RandomDep } from "../Random.js";
 import { createRefCountedResourceManager } from "../RefCountedResourceManager.js";
 import { ok, Result } from "../Result.js";
-import { sql, SqliteDep, SqliteError, SqliteValue } from "../Sqlite.js";
+import {
+  SafeSql,
+  sql,
+  SqliteDep,
+  SqliteError,
+  SqliteQuery,
+  SqliteValue,
+} from "../Sqlite.js";
 import { AbortError, createMutex } from "../Task.js";
 import { TimeDep } from "../Time.js";
 import { IdBytes, idBytesToId, idToIdBytes } from "../Type.js";
@@ -46,7 +53,7 @@ import {
   ProtocolTimestampMismatchError,
   SubscriptionFlags,
 } from "./Protocol.js";
-import { MutationChange } from "./Schema.js";
+import { BulkUpdateChange, MutationChange } from "./Schema.js";
 import {
   CrdtMessage,
   createSqliteStorageBase,
@@ -632,6 +639,67 @@ export const applyLocalOnlyChange =
     }
 
     return ok();
+  };
+
+/**
+ * Applies a bulk update to a local-only table.
+ *
+ * Executes `UPDATE table SET ... WHERE ...` directly without generating CRDT
+ * messages. Only for tables prefixed with underscore.
+ *
+ * Returns the number of rows affected.
+ */
+export const applyBulkUpdate =
+  (deps: SqliteDep & TimeDep) =>
+  (change: BulkUpdateChange): Result<number, SqliteError> => {
+    const date = new Date(deps.time.now()).toISOString();
+    const entries = objectToEntries(change.values);
+
+    if (entries.length === 0) {
+      return ok(0);
+    }
+
+    // Build SET clause: column1 = ?, column2 = ?, ...
+    const setClauses = entries.map(
+      ([column]) => sql`${sql.identifier(column)} = ?`,
+    );
+    const setValues = entries.map(([, value]) => value);
+
+    // Always update updatedAt
+    const setClausesWithUpdatedAt = [
+      ...setClauses,
+      sql`${sql.identifier("updatedAt")} = ?`,
+    ];
+    const valuesWithUpdatedAt = [...setValues, date];
+
+    // Build WHERE clause: column1 op ? AND column2 op ? AND ...
+    const whereConditions = change.where.map(
+      (condition) =>
+        sql`${sql.identifier(condition.column)} ${sql.raw(condition.op)} ?`,
+    );
+    const whereValues = change.where.map((condition) => condition.value);
+
+    // Combine all values for the query
+    const allValues = [...valuesWithUpdatedAt, ...whereValues];
+
+    // Build the complete query
+    const setClauseSql = setClausesWithUpdatedAt
+      .map((s) => s.sql)
+      .join(", ") as SafeSql;
+    const whereClauseSql =
+      whereConditions.length > 0
+        ? ((` where ` + whereConditions.map((w) => w.sql).join(" and ")) as SafeSql)
+        : ("" as SafeSql);
+
+    const query: SqliteQuery = {
+      sql: `update ${sql.identifier(change.table).sql} set ${setClauseSql}${whereClauseSql};` as SafeSql,
+      parameters: allValues,
+    };
+
+    const result = deps.sqlite.exec(query);
+    if (!result.ok) return result;
+
+    return ok(result.value.changes);
   };
 
 const applyMessages =

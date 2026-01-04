@@ -10,7 +10,13 @@ export * from "./Owner.js";
 export * from "./LocalAuth.js";
 export * as kysely from "./PublicKysely.js";
 export type { InferRow, Query, QueryRows, Row } from "./Query.js";
-export type { EvoluSchema } from "./Schema.js";
+export type {
+  BulkUpdateError,
+  BulkUpdateOptions,
+  BulkUpdateWhere,
+  BulkUpdateWhereCondition,
+  EvoluSchema,
+} from "./Schema.js";
 export type {
   NetworkError,
   PaymentRequiredError,

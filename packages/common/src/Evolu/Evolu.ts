@@ -8,7 +8,13 @@ import { eqArrayNumber } from "../Eq.js";
 import { TransferableError } from "../Error.js";
 import { exhaustiveCheck } from "../Function.js";
 import { err, ok, Result } from "../Result.js";
-import { isSqlMutation, SafeSql, SqliteError, SqliteQuery } from "../Sqlite.js";
+import {
+  isSqlMutation,
+  SafeSql,
+  SqliteError,
+  SqliteQuery,
+  SqliteValue,
+} from "../Sqlite.js";
 import { createStore, StoreSubscribe } from "../Store.js";
 import { TimeDep } from "../Time.js";
 import {
@@ -42,6 +48,11 @@ import {
   SubscribedQueries,
 } from "./Query.js";
 import {
+  BulkUpdate,
+  BulkUpdateChange,
+  BulkUpdateError,
+  BulkUpdateOptions,
+  BulkUpdateWhere,
   CreateQuery,
   DefaultColumns,
   EvoluSchema,
@@ -444,6 +455,56 @@ export interface Evolu<S extends EvoluSchema = EvoluSchema> {
   upsert: Mutation<S, "upsert">;
 
   /**
+   * Performs a bulk update on a local-only table.
+   *
+   * This method executes `UPDATE ... SET ... WHERE ...` directly on the
+   * database. It's only available for local-only tables (tables prefixed with
+   * underscore, e.g., `_todos`) because bulk updates don't generate CRDT
+   * messages, which would risk generating too many messages for synced tables.
+   *
+   * Returns a Result indicating if the operation was accepted. The actual
+   * number of affected rows is provided via the `onComplete` callback.
+   *
+   * ### Example
+   *
+   * ```ts
+   * // Mark all incomplete local todos as completed
+   * const result = evolu.bulkUpdate(
+   *   "_todos",
+   *   { isCompleted: true },
+   *   [{ column: "isCompleted", op: "=", value: false }],
+   * );
+   *
+   * if (!result.ok) {
+   *   console.error("Validation error:", result.error);
+   * }
+   *
+   * // Update with multiple conditions
+   * evolu.bulkUpdate(
+   *   "_tasks",
+   *   { status: "archived" },
+   *   [
+   *     { column: "status", op: "=", value: "completed" },
+   *     { column: "createdAt", op: "<", value: "2024-01-01" },
+   *   ],
+   * );
+   *
+   * // With onComplete callback to get number of affected rows
+   * evolu.bulkUpdate(
+   *   "_logs",
+   *   { archived: true },
+   *   [{ column: "level", op: "=", value: "debug" }],
+   *   {
+   *     onComplete: (changes) => {
+   *       console.log(`Bulk update completed, ${changes} rows affected`);
+   *     },
+   *   },
+   * );
+   * ```
+   */
+  bulkUpdate: BulkUpdate<S>;
+
+  /**
    * Delete {@link AppOwner} and all their data from the current device. After
    * the deletion, Evolu will purge the application state. For browsers, this
    * will reload all tabs using Evolu. For native apps, it will restart the
@@ -650,6 +711,7 @@ const createEvoluInstance =
     const onCompleteRegistry = createCallbackRegistry(deps);
     const exportRegistry =
       createCallbackRegistry<Uint8Array<ArrayBuffer>>(deps);
+    const bulkUpdateRegistry = createCallbackRegistry<number>(deps);
 
     const dbWorker = deps.createDbWorker(dbConfig.name);
 
@@ -838,6 +900,32 @@ const createEvoluInstance =
             message.onCompleteId,
             message.file as Uint8Array<ArrayBuffer>,
           );
+          break;
+        }
+
+        case "onBulkUpdate": {
+          if (message.tabId !== getTabId()) return;
+
+          const state = rowsStore.get();
+          const nextState = new Map([
+            ...state,
+            ...message.queryPatches.map(
+              ({ query, patches }): [Query, ReadonlyArray<Row>] => [
+                query,
+                applyPatches(patches, state.get(query) ?? emptyRows),
+              ],
+            ),
+          ]);
+
+          for (const { query } of message.queryPatches) {
+            loadingPromises.resolve(query, nextState.get(query) ?? emptyRows);
+          }
+
+          rowsStore.set(nextState);
+
+          if (message.onCompleteId !== null) {
+            bulkUpdateRegistry.execute(message.onCompleteId, message.changes);
+          }
           break;
         }
 
@@ -1071,6 +1159,84 @@ const createEvoluInstance =
       insert: createMutation("insert"),
       update: createMutation("update"),
       upsert: createMutation("upsert"),
+
+      bulkUpdate: (table, values, where, options) => {
+        // Validate that the table is local-only (starts with _)
+        if (!table.startsWith("_")) {
+          return err<BulkUpdateError>({
+            type: "BulkUpdateError",
+            message: `Bulk update is only allowed on local-only tables (prefixed with _). Got: "${table}"`,
+          });
+        }
+
+        // Validate that values is not empty
+        const entries = Object.entries(values);
+        if (entries.length === 0) {
+          return err<BulkUpdateError>({
+            type: "BulkUpdateError",
+            message: "Values cannot be empty for bulk update",
+          });
+        }
+
+        // Validate column values against schema
+        const tableSchema = schema[table];
+        if (!tableSchema) {
+          return err<BulkUpdateError>({
+            type: "BulkUpdateError",
+            message: `Table "${table}" not found in schema`,
+          });
+        }
+
+        const validatedValues: Record<string, SqliteValue> = {};
+        for (const [column, value] of entries) {
+          if (column === "id") {
+            return err<BulkUpdateError>({
+              type: "BulkUpdateError",
+              message: "Cannot update 'id' column in bulk update",
+            });
+          }
+
+          const columnType = tableSchema[column];
+          if (!columnType) {
+            return err<BulkUpdateError>({
+              type: "BulkUpdateError",
+              message: `Column "${column}" not found in table "${table}"`,
+            });
+          }
+
+          const validationResult = columnType.fromUnknown(value);
+          if (!validationResult.ok) {
+            return err<BulkUpdateError>({
+              type: "BulkUpdateError",
+              message: `Invalid value for column "${column}"`,
+            });
+          }
+
+          validatedValues[column] = validationResult.value as SqliteValue;
+        }
+
+        const change: BulkUpdateChange = {
+          table,
+          values: validatedValues,
+          where,
+        };
+
+        loadingPromises.releaseUnsubscribedOnMutation();
+
+        const onCompleteId = options?.onComplete
+          ? bulkUpdateRegistry.register(options.onComplete)
+          : null;
+
+        dbWorker.postMessage({
+          type: "bulkUpdate",
+          tabId: getTabId(),
+          change,
+          onCompleteId,
+          subscribedQueries: subscribedQueries.get(),
+        });
+
+        return ok();
+      },
 
       resetAppOwner: (options) => {
         const { promise, resolve } = Promise.withResolvers<undefined>();

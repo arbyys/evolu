@@ -46,12 +46,14 @@ import {
   QueryRowsCache,
 } from "./Query.js";
 import {
+  BulkUpdateChange,
   DbSchema,
   ensureDbSchema,
   getDbSchema,
   MutationChange,
 } from "./Schema.js";
 import {
+  applyBulkUpdate,
   applyLocalOnlyChange,
   Clock,
   createClock,
@@ -236,6 +238,13 @@ export type DbWorkerInput =
       readonly type: "useOwner";
       readonly use: boolean;
       readonly owner: SyncOwner;
+    }
+  | {
+      readonly type: "bulkUpdate";
+      readonly tabId: Id;
+      readonly change: BulkUpdateChange;
+      readonly onCompleteId: CallbackId | null;
+      readonly subscribedQueries: ReadonlyArray<Query>;
     };
 
 export type DbWorkerOutput =
@@ -271,6 +280,13 @@ export type DbWorkerOutput =
       readonly type: "onExport";
       readonly onCompleteId: CallbackId;
       readonly file: Uint8Array;
+    }
+  | {
+      readonly type: "onBulkUpdate";
+      readonly tabId: Id;
+      readonly changes: number;
+      readonly queryPatches: ReadonlyArray<QueryPatches>;
+      readonly onCompleteId: CallbackId | null;
     };
 
 export type DbWorkerPlatformDeps = ConsoleDep &
@@ -707,6 +723,38 @@ const handlers: Omit<MessageHandlers<DbWorkerInput, DbWorkerDeps>, "init"> = {
       onCompleteId: message.onCompleteId,
       file: file.value,
     });
+  },
+
+  bulkUpdate: (deps) => (message) => {
+    const bulkUpdateResult = deps.sqlite.transaction(() => {
+      const result = applyBulkUpdate(deps)(message.change);
+      if (!result.ok) return result;
+
+      // Read writes before commit to update UI ASAP
+      const queryPatches = loadQueries(deps)(
+        message.tabId,
+        message.subscribedQueries,
+      );
+      if (!queryPatches.ok) return queryPatches;
+
+      deps.postMessage({
+        type: "onBulkUpdate",
+        tabId: message.tabId,
+        changes: result.value,
+        queryPatches: queryPatches.value,
+        onCompleteId: message.onCompleteId,
+      });
+
+      // Notify other tabs to refresh their queries.
+      deps.postMessage({ type: "refreshQueries", tabId: message.tabId });
+
+      return ok();
+    });
+
+    if (!bulkUpdateResult.ok) {
+      deps.postMessage({ type: "onError", error: bulkUpdateResult.error });
+      return;
+    }
   },
 
   useOwner: (deps) => (message) => {

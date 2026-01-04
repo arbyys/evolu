@@ -987,6 +987,145 @@ test("sync mutations", async () => {
   checkSqlOperations(testConsole);
 });
 
+test("bulkUpdate updates multiple rows in local-only table", async () => {
+  const { worker, sqlite, workerOutput } = await createInitializedDbWorker();
+
+  // Insert some test data into _localTable
+  const id1 = testCreateId();
+  const id2 = testCreateId();
+  const id3 = testCreateId();
+
+  const subscribedQuery = createQuery((db) =>
+    db.selectFrom("_localTable").selectAll().where("isDeleted", "is", null),
+  );
+
+  // Insert multiple rows
+  worker.postMessage({
+    type: "mutate",
+    tabId,
+    changes: [
+      { id: id1, table: "_localTable", values: { value: "value1" } },
+      { id: id2, table: "_localTable", values: { value: "value2" } },
+      { id: id3, table: "_localTable", values: { value: "value3" } },
+    ],
+    onCompleteIds: [],
+    subscribedQueries: [subscribedQuery],
+  });
+
+  // Clear output from inserts
+  workerOutput.splice(0);
+
+  // Bulk update rows where value starts with "value" (all of them)
+  worker.postMessage({
+    type: "bulkUpdate",
+    tabId,
+    change: {
+      table: "_localTable",
+      values: { value: "updated" },
+      where: [{ column: "value", op: "=", value: "value1" }],
+    },
+    onCompleteId: "test-callback" as CallbackId,
+    subscribedQueries: [subscribedQuery],
+  });
+
+  await wait("10ms")();
+
+  // Check the bulk update result
+  const bulkUpdateOutput = workerOutput.splice(0);
+  expect(bulkUpdateOutput).toHaveLength(2); // onBulkUpdate + refreshQueries
+
+  const updateResult = bulkUpdateOutput[0] as {
+    type: string;
+    changes: number;
+    tabId: string;
+    onCompleteId: string;
+  };
+  expect(updateResult.type).toBe("onBulkUpdate");
+  expect(updateResult.changes).toBe(1); // Only value1 matches the where clause
+  expect(updateResult.onCompleteId).toBe("test-callback");
+
+  // Verify the data was updated
+  const result = sqlite.exec({
+    sql: 'select * from "_localTable" order by "id"' as any,
+    parameters: [],
+  });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    const updatedRow = result.value.rows.find((r) => r.id === id1);
+    expect(updatedRow?.value).toBe("updated");
+
+    // Other rows should be unchanged
+    const unchangedRow1 = result.value.rows.find((r) => r.id === id2);
+    expect(unchangedRow1?.value).toBe("value2");
+
+    const unchangedRow2 = result.value.rows.find((r) => r.id === id3);
+    expect(unchangedRow2?.value).toBe("value3");
+  }
+});
+
+test("bulkUpdate updates all matching rows with multiple conditions", async () => {
+  const { worker, sqlite, workerOutput } = await createInitializedDbWorker();
+
+  const id1 = testCreateId();
+  const id2 = testCreateId();
+  const id3 = testCreateId();
+
+  const subscribedQuery = createQuery((db) =>
+    db.selectFrom("_localTable").selectAll().where("isDeleted", "is", null),
+  );
+
+  // Insert rows with different values
+  worker.postMessage({
+    type: "mutate",
+    tabId,
+    changes: [
+      { id: id1, table: "_localTable", values: { value: "a" } },
+      { id: id2, table: "_localTable", values: { value: "b" } },
+      { id: id3, table: "_localTable", values: { value: "a" } },
+    ],
+    onCompleteIds: [],
+    subscribedQueries: [subscribedQuery],
+  });
+
+  workerOutput.splice(0);
+
+  // Update all rows where value = 'a'
+  worker.postMessage({
+    type: "bulkUpdate",
+    tabId,
+    change: {
+      table: "_localTable",
+      values: { value: "updated_a" },
+      where: [{ column: "value", op: "=", value: "a" }],
+    },
+    onCompleteId: null,
+    subscribedQueries: [subscribedQuery],
+  });
+
+  await wait("10ms")();
+
+  const bulkUpdateOutput = workerOutput.splice(0);
+  const updateResult = bulkUpdateOutput[0] as { type: string; changes: number };
+  expect(updateResult.type).toBe("onBulkUpdate");
+  expect(updateResult.changes).toBe(2); // id1 and id3 both match
+
+  // Verify both matching rows were updated
+  const result = sqlite.exec({
+    sql: 'select * from "_localTable" order by "id"' as any,
+    parameters: [],
+  });
+
+  if (result.ok) {
+    const row1 = result.value.rows.find((r) => r.id === id1);
+    const row2 = result.value.rows.find((r) => r.id === id2);
+    const row3 = result.value.rows.find((r) => r.id === id3);
+
+    expect(row1?.value).toBe("updated_a");
+    expect(row2?.value).toBe("b"); // Unchanged
+    expect(row3?.value).toBe("updated_a");
+  }
+});
+
 describe("WebSocket", () => {
   test("sends messages when socket is opened", async () => {
     const { worker, transports, testConsole } =
