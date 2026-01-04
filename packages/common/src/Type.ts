@@ -3757,6 +3757,107 @@ export type ValidMutationSize<Props extends Record<string, AnyType>> =
     InferErrors<ObjectType<Props>>
   >;
 
+const GeneratedTypeSymbol = Symbol("evolu.GeneratedType");
+
+/**
+ * A generated column Type that wraps an underlying Type with SQLite
+ * GENERATED ALWAYS AS expression metadata.
+ *
+ * Generated columns are computed from other columns using SQL expressions and
+ * cannot be directly mutated via `insert`, `update`, or `upsert`. They are
+ * automatically excluded from mutation types but available in queries.
+ *
+ * This enables using SQLite as a document database by storing JSON data and
+ * extracting indexed fields via `json_extract`.
+ *
+ * ### Example
+ *
+ * ```ts
+ * const DocumentId = id("Document");
+ * type DocumentId = typeof DocumentId.Type;
+ *
+ * // JSON schema for document payload
+ * const DocumentPayload = object({
+ *   type: String,
+ *   priority: optional(Int),
+ *   content: String,
+ * });
+ * const [DocumentPayloadJson] = json(DocumentPayload);
+ *
+ * const Schema = {
+ *   document: {
+ *     id: DocumentId,
+ *     payload: DocumentPayloadJson,
+ *     // Generated column: extracts 'type' from JSON for indexing/filtering
+ *     docType: generatedAs(nullOr(String), "json_extract(payload, '$.type')"),
+ *     // Generated column: extracts 'priority' for efficient queries
+ *     priority: generatedAs(nullOr(Int), "json_extract(payload, '$.priority')"),
+ *   },
+ * };
+ *
+ * // Now you can query efficiently:
+ * const highPriorityDocs = evolu.createQuery((db) =>
+ *   db.selectFrom("document")
+ *     .where("priority", ">", 5)
+ *     .where("docType", "=", "task")
+ *     .select(["id", "payload"])
+ * );
+ * ```
+ */
+export type GeneratedType<T extends AnyType> = T & {
+  readonly [GeneratedTypeSymbol]: true;
+  /** The SQL expression used to compute the column value. */
+  readonly generatedExpression: string;
+  /**
+   * Whether the column is VIRTUAL (computed on read) or STORED (computed on
+   * write). VIRTUAL is the default and more space-efficient. STORED columns
+   * can be indexed directly but take more disk space.
+   */
+  readonly generatedIsVirtual: boolean;
+};
+
+/**
+ * Creates a generated column definition for SQLite GENERATED ALWAYS AS.
+ *
+ * Generated columns are computed from other columns and cannot be mutated
+ * directly. They're useful for:
+ *
+ * - Extracting JSON fields for indexing: `json_extract(body, '$.type')`
+ * - Computing derived values: `firstName || ' ' || lastName`
+ * - Data validation via constraints on generated columns
+ *
+ * ### Example
+ *
+ * ```ts
+ * const Schema = {
+ *   item: {
+ *     id: ItemId,
+ *     data: JsonString,
+ *     // Extract and index the 'category' field from JSON
+ *     category: generatedAs(nullOr(String), "json_extract(data, '$.category')"),
+ *   },
+ * };
+ * ```
+ */
+export const generatedAs = <T extends AnyType>(
+  type: T,
+  expression: string,
+  options?: { readonly stored?: boolean },
+): GeneratedType<T> =>
+  ({
+    ...type,
+    [GeneratedTypeSymbol]: true,
+    generatedExpression: expression,
+    generatedIsVirtual: options?.stored !== true,
+  }) as GeneratedType<T>;
+
+/** Checks if the given value is a {@link GeneratedType}. */
+export const isGeneratedType = (value: unknown): value is GeneratedType<any> =>
+  typeof value === "object" &&
+  value !== null &&
+  GeneratedTypeSymbol in value &&
+  (value as { [GeneratedTypeSymbol]: boolean })[GeneratedTypeSymbol] === true;
+
 /**
  * Union of all `TypeError`s defined in the `Type.ts` file, including base type
  * errors (e.g., `StringError`, `NumberError`), composite type errors

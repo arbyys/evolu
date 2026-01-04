@@ -15,10 +15,12 @@ import {
   AnyType,
   array,
   DateIso,
+  GeneratedType,
   IdBytes,
   InferErrors,
   InferInput,
   InferType,
+  isGeneratedType,
   maxMutationSize,
   MergeObjectTypeErrors,
   nullableToOptional,
@@ -79,6 +81,7 @@ import { TimestampBytes } from "./Timestamp.js";
 export type EvoluSchema = ReadonlyRecord<
   string,
   // TypeScript errors are cryptic so we use ValidateSchema.
+  // GeneratedType<T> extends AnyType so it's included.
   ReadonlyRecord<string, Type<any, any, any, any, any, any>>
 >;
 
@@ -164,12 +167,37 @@ export const evoluSchemaToDbSchema = (
   schema: EvoluSchema,
   indexesConfig?: IndexesConfig,
 ): DbSchema => {
-  const tables = objectToEntries(schema).map(([tableName, table]) => ({
-    name: tableName,
-    columns: objectToEntries(table)
-      .filter(([k]) => k !== "id")
-      .map(([k]) => k),
-  }));
+  const tables = objectToEntries(schema).map(([tableName, table]) => {
+    const entries = objectToEntries(table).filter(([k]) => k !== "id");
+
+    // Separate regular columns from generated columns
+    const columns: Array<string> = [];
+    const generatedColumns: Array<DbGeneratedColumn> = [];
+
+    entries.forEach(([columnName, columnType]) => {
+      if (isGeneratedType(columnType)) {
+        // Type assertion is needed because isGeneratedType is a runtime check
+        // and TypeScript cannot narrow the generic AnyType to include generated props
+        const generated = columnType as unknown as {
+          generatedExpression: string;
+          generatedIsVirtual: boolean;
+        };
+        generatedColumns.push({
+          name: columnName,
+          expression: generated.generatedExpression,
+          isVirtual: generated.generatedIsVirtual,
+        });
+      } else {
+        columns.push(columnName);
+      }
+    });
+
+    return {
+      name: tableName,
+      columns,
+      ...(generatedColumns.length > 0 && { generatedColumns }),
+    };
+  });
 
   const indexes = indexesConfig
     ? indexesConfig(createIndex).map(
@@ -310,8 +338,45 @@ export interface MutationChange extends DbChange {
 }
 
 /**
+ * Filters out generated columns from props since they cannot be mutated.
+ * Generated columns are computed by SQLite and not stored directly.
+ */
+const filterOutGeneratedColumns = <Props extends Record<string, unknown>>(
+  props: Props,
+): Props => {
+  const filtered: Record<string, unknown> = {};
+  for (const key in props) {
+    if (!isGeneratedType(props[key])) {
+      filtered[key] = props[key];
+    }
+  }
+  return filtered as Props;
+};
+
+/**
+ * Type-level check if a type is a GeneratedType by checking for the
+ * `generatedExpression` property which is only present on GeneratedType.
+ */
+type IsGeneratedType<T> = T extends { readonly generatedExpression: string }
+  ? true
+  : false;
+
+/**
+ * Type-level utility to exclude generated columns from a props record.
+ * Used to ensure generated columns aren't included in mutation types.
+ */
+export type OmitGeneratedColumns<Props extends Record<string, AnyType>> = {
+  [K in keyof Props as IsGeneratedType<Props[K]> extends true
+    ? never
+    : K]: Props[K];
+};
+
+/**
  * Type Factory to create insertable {@link Type}. It makes nullable Types
- * optional, omits Id, and ensures the {@link maxMutationSize}.
+ * optional, omits Id and generated columns, and ensures the {@link maxMutationSize}.
+ *
+ * Generated columns (created with `generatedAs`) are automatically excluded
+ * at runtime since they are computed by SQLite and cannot be mutated.
  *
  * ### Example
  *
@@ -324,10 +389,13 @@ export interface MutationChange extends DbChange {
  */
 export const insertable = <Props extends Record<string, AnyType>>(
   props: Props,
-): ValidMutationSize<InsertableProps<Props>> => {
-  const optionalNullable = nullableToOptional(props);
+): ValidMutationSize<InsertableProps<OmitGeneratedColumns<Props>>> => {
+  const withoutGenerated = filterOutGeneratedColumns(props);
+  const optionalNullable = nullableToOptional(withoutGenerated);
   const withoutId = omit(optionalNullable, "id");
-  return validMutationSize(withoutId);
+  return validMutationSize(withoutId) as unknown as ValidMutationSize<
+    InsertableProps<OmitGeneratedColumns<Props>>
+  >;
 };
 
 export type InsertableProps<Props extends Record<string, AnyType>> = Omit<
@@ -341,7 +409,7 @@ export type Insertable<Props extends Record<string, AnyType>> = InferInput<
 
 /**
  * Type Factory to create updateable {@link Type}. It makes everything except for
- * the `id` column partial (i.e. optional) and ensures the
+ * the `id` column partial (i.e. optional), excludes generated columns, and ensures the
  * {@link maxMutationSize}.
  *
  * ### Example
@@ -360,12 +428,15 @@ export type Insertable<Props extends Record<string, AnyType>> = InferInput<
  */
 export const updateable = <Props extends Record<string, AnyType>>(
   props: Props,
-): ValidMutationSize<UpdateableProps<Props>> => {
-  const propsWithIsDeleted = { ...props, isDeleted: SqliteBoolean };
+): ValidMutationSize<UpdateableProps<OmitGeneratedColumns<Props>>> => {
+  const withoutGenerated = filterOutGeneratedColumns(props);
+  const propsWithIsDeleted = { ...withoutGenerated, isDeleted: SqliteBoolean };
   const updateableProps = mapObject(propsWithIsDeleted, (value, key) =>
     key === "id" ? value : optional(value),
-  ) as UpdateableProps<Props>;
-  return validMutationSize(object(updateableProps));
+  ) as UpdateableProps<OmitGeneratedColumns<Props>>;
+  return validMutationSize(object(updateableProps)) as ValidMutationSize<
+    UpdateableProps<OmitGeneratedColumns<Props>>
+  >;
 };
 
 export type UpdateableProps<Props extends Record<string, AnyType>> = {
@@ -378,8 +449,8 @@ export type Updateable<Props extends Record<string, AnyType>> = InferInput<
 
 /**
  * Type Factory to create upsertable Type. It makes nullable Types optional,
- * includes optional default columns (createdAt, isDeleted), and ensures the
- * {@link maxMutationSize}.
+ * includes optional default columns (createdAt, isDeleted), excludes generated
+ * columns, and ensures the {@link maxMutationSize}.
  *
  * ### Example
  *
@@ -396,13 +467,16 @@ export type Updateable<Props extends Record<string, AnyType>> = InferInput<
  */
 export const upsertable = <Props extends Record<string, AnyType>>(
   props: Props,
-): ValidMutationSize<UpsertableProps<Props>> => {
+): ValidMutationSize<UpsertableProps<OmitGeneratedColumns<Props>>> => {
+  const withoutGenerated = filterOutGeneratedColumns(props);
   const propsWithDefaults = {
-    ...props,
+    ...withoutGenerated,
     createdAt: optional(DateIso),
     isDeleted: optional(SqliteBoolean),
   };
-  return validMutationSize(nullableToOptional(propsWithDefaults));
+  return validMutationSize(
+    nullableToOptional(propsWithDefaults),
+  ) as unknown as ValidMutationSize<UpsertableProps<OmitGeneratedColumns<Props>>>;
 };
 
 export type UpsertableProps<Props extends Record<string, AnyType>> =
@@ -435,20 +509,37 @@ export type InferColumnErrors<
   >;
 }[keyof MutationMapping<T, M>];
 
-export const DbTable = object({
-  name: String,
-  columns: array(String),
-});
-export type DbTable = typeof DbTable.Type;
+/**
+ * Represents a generated column definition for SQLite GENERATED ALWAYS AS.
+ *
+ * Generated columns are computed from other columns and cannot be mutated.
+ */
+export interface DbGeneratedColumn {
+  readonly name: string;
+  readonly expression: string;
+  readonly isVirtual: boolean;
+}
+
+/**
+ * Represents a database table with regular and optional generated columns.
+ */
+export interface DbTable {
+  readonly name: string;
+  readonly columns: ReadonlyArray<string>;
+  /** Generated columns with their SQL expressions. */
+  readonly generatedColumns?: ReadonlyArray<DbGeneratedColumn>;
+}
 
 export const DbIndex = object({ name: String, sql: String });
 export type DbIndex = typeof DbIndex.Type;
 
-export const DbSchema = object({
-  tables: array(DbTable),
-  indexes: array(DbIndex),
-});
-export type DbSchema = typeof DbSchema.Type;
+/**
+ * Represents the database schema with tables and indexes.
+ */
+export interface DbSchema {
+  readonly tables: ReadonlyArray<DbTable>;
+  readonly indexes: ReadonlyArray<DbIndex>;
+}
 
 /** Get the current database schema by reading SQLite metadata. */
 export const getDbSchema =
@@ -535,10 +626,15 @@ export const ensureDbSchema =
       );
       if (!currentTable) {
         queries.push({
-          sql: createTableWithDefaultColumns(newTable.name, newTable.columns),
+          sql: createTableWithDefaultColumns(
+            newTable.name,
+            newTable.columns,
+            newTable.generatedColumns,
+          ),
           parameters: [],
         });
       } else {
+        // Add new regular columns
         newTable.columns
           .filter((newColumn) => !currentTable.columns.includes(newColumn))
           .forEach((newColumn) => {
@@ -546,6 +642,22 @@ export const ensureDbSchema =
               alter table ${sql.identifier(newTable.name)}
               add column ${sql.identifier(newColumn)} blob;
             `);
+          });
+
+        // Add new generated columns (VIRTUAL only - STORED cannot be added via ALTER TABLE)
+        const currentGeneratedNames = new Set(
+          (currentTable.generatedColumns ?? []).map((c) => c.name),
+        );
+        (newTable.generatedColumns ?? [])
+          .filter((col) => !currentGeneratedNames.has(col.name))
+          .forEach((col) => {
+            // SQLite only allows adding VIRTUAL generated columns via ALTER TABLE
+            // STORED columns would require recreating the table
+            const storage = col.isVirtual ? "VIRTUAL" : "STORED";
+            queries.push({
+              sql: `alter table ${sql.identifier(newTable.name).sql} add column ${sql.identifier(col.name).sql} generated always as (${col.expression}) ${storage};` as SafeSql,
+              parameters: [],
+            });
           });
       }
     });
@@ -586,21 +698,32 @@ export const ensureDbSchema =
 const createTableWithDefaultColumns = (
   tableName: string,
   columns: ReadonlyArray<string>,
-): SafeSql =>
-  `
+  generatedColumns?: ReadonlyArray<DbGeneratedColumn>,
+): SafeSql => {
+  // Regular columns with blob type
+  const regularColumnDefs = columns
+    .concat(["createdAt", "updatedAt", "isDeleted"])
+    .filter((c) => c !== "id")
+    // "A column with affinity BLOB does not prefer one storage class over another
+    // and no attempt is made to coerce data from one storage class into another."
+    // https://www.sqlite.org/datatype3.html
+    .map((name) => `${sql.identifier(name).sql} blob`);
+
+  // Generated columns with GENERATED ALWAYS AS
+  const generatedColumnDefs = (generatedColumns ?? []).map((col) => {
+    const storage = col.isVirtual ? "VIRTUAL" : "STORED";
+    return `${sql.identifier(col.name).sql} generated always as (${col.expression}) ${storage}`;
+  });
+
+  const allColumnDefs = [...regularColumnDefs, ...generatedColumnDefs];
+
+  return `
     create table ${sql.identifier(tableName).sql} (
       "id" text primary key,
-      ${columns
-        // Add default columns.
-        .concat(["createdAt", "updatedAt", "isDeleted"])
-        .filter((c) => c !== "id")
-        // "A column with affinity BLOB does not prefer one storage class over another
-        // and no attempt is made to coerce data from one storage class into another."
-        // https://www.sqlite.org/datatype3.html
-        .map((name) => `${sql.identifier(name).sql} blob`)
-        .join(", ")}
+      ${allColumnDefs.join(", ")}
     );
   ` as SafeSql;
+};
 
 // https://kysely.dev/docs/recipes/splitting-query-building-and-execution
 export const kysely = new Kysely.Kysely({
