@@ -5,4 +5,5 @@ export * from "./useEvolu.js";
 export * from "./useOwner.js";
 export * from "./useQueries.js";
 export * from "./useQuery.js";
+export * from "./useSyncProgress.js";
 export * from "./useSyncState.js";

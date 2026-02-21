@@ -145,6 +145,10 @@ export interface SyncConfig {
   ) => void;
 
   readonly onReceive: () => void;
+
+  readonly onSyncStateChange: (state: SyncState) => void;
+
+  readonly onSyncProgressChange: (progress: SyncProgress) => void;
 }
 
 export const createSync =
@@ -843,5 +847,22 @@ export interface PaymentRequiredError extends Typed<"PaymentRequiredError"> {}
 
 export const initialSyncState: SyncStateInitial = { type: "SyncStateInitial" };
 
-// TODO:
-// export const createSyncState, jasny, a ten si vezme taky shared worker, jasny
+/**
+ * Tracks byte-level synchronization progress, separate from {@link SyncState}.
+ *
+ * Accumulates `receivedBytes` and `sentBytes` during a sync cycle. Resets when
+ * sync completes or fails. The `totalBytes` field is `null` when the total is
+ * unknown (the common case without protocol-level metadata).
+ */
+export interface SyncProgress extends Typed<"SyncProgress"> {
+  readonly receivedBytes: number;
+  readonly sentBytes: number;
+  readonly totalBytes: number | null;
+}
+
+export const initialSyncProgress: SyncProgress = {
+  type: "SyncProgress",
+  receivedBytes: 0,
+  sentBytes: 0,
+  totalBytes: null,
+};

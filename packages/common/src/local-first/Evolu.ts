@@ -61,6 +61,8 @@ import { evoluSchemaToDbSchema } from "./Schema.js";
 import type { EvoluInput, EvoluTabOutput, SharedWorkerDep } from "./Shared.js";
 import { DbChange } from "./Storage.js";
 import type { SyncOwner } from "./Sync.js";
+import type { SyncProgress, SyncState } from "./Sync.js";
+import { initialSyncProgress, initialSyncState } from "./Sync.js";
 import type { Timestamp } from "./Timestamp.js";
 
 export interface EvoluConfig {
@@ -378,6 +380,40 @@ export interface Evolu<
   readonly upsert: Mutation<S, "upsert">;
 
   /**
+   * Subscribe to {@link SyncState} changes.
+   *
+   * ### Example
+   *
+   * ```ts
+   * const unsubscribe = evolu.subscribeSyncState(() => {
+   *   const syncState = evolu.getSyncState();
+   * });
+   * ```
+   */
+  readonly subscribeSyncState: (listener: Listener) => Unsubscribe;
+
+  /** Get current {@link SyncState}. */
+  readonly getSyncState: () => SyncState;
+
+  /**
+   * Subscribe to {@link SyncProgress} changes.
+   *
+   * {@link SyncProgress} tracks byte-level transfer metrics.
+   *
+   * ### Example
+   *
+   * ```ts
+   * const unsubscribe = evolu.subscribeSyncProgress(() => {
+   *   const progress = evolu.getSyncProgress();
+   * });
+   * ```
+   */
+  readonly subscribeSyncProgress: (listener: Listener) => Unsubscribe;
+
+  /** Get current {@link SyncProgress}. */
+  readonly getSyncProgress: () => SyncProgress;
+
+  /**
    * // TODO: Ten naming je furt divnej, syncOwner? subscribeOwner? // hmm, use
    * je ale ok, cleanup vracet teda? uvidime.
    *
@@ -498,6 +534,8 @@ export const createEvolu =
     console.info("createEvolu", { config });
 
     const _rowsStore = createStore<QueryRowsMap>(new Map());
+    const syncStateStore = createStore<SyncState>(initialSyncState);
+    const syncProgressStore = createStore<SyncProgress>(initialSyncProgress);
     const subscribedQueriesRefCount = createRefCount<Query>();
     const onCompleteCallbacks = createCallbacks(run.deps);
 
@@ -602,6 +640,12 @@ export const createEvolu =
       loadQueries: todo,
       subscribeQuery: todo,
       getQueryRows: todo,
+
+      subscribeSyncState: syncStateStore.subscribe,
+      getSyncState: syncStateStore.get,
+      subscribeSyncProgress: syncProgressStore.subscribe,
+      getSyncProgress: syncProgressStore.get,
+
       insert: createMutation("insert"),
       update: createMutation("update"),
       upsert: createMutation("upsert"),
