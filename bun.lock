@@ -12,7 +12,7 @@
         "@typescript-eslint/parser": "^8.58.0",
         "@vitest/browser": "^4.1.2",
         "@vitest/browser-playwright": "^4.1.2",
-        "@vitest/coverage-v8": "^4.1.2",
+        "@vitest/coverage-v8": "4.1.2",
         "eslint": "^10.1.0",
         "eslint-plugin-jsdoc": "^62.8.1",
         "eslint-plugin-react-hooks": "^7.0.1",
@@ -31,7 +31,7 @@
     },
     "apps/relay": {
       "name": "relay",
-      "version": "2.0.8",
+      "version": "3.0.0-next.0",
       "dependencies": {
         "@evolu/common": "*",
         "@evolu/nodejs": "*",
@@ -270,7 +270,7 @@
     },
     "packages/common": {
       "name": "@evolu/common",
-      "version": "7.4.1",
+      "version": "8.0.0-next.0",
       "dependencies": {
         "@noble/ciphers": "^2.1.1",
         "@noble/hashes": "^2.0.1",
@@ -295,13 +295,13 @@
     },
     "packages/nodejs": {
       "name": "@evolu/nodejs",
-      "version": "2.4.0",
+      "version": "3.0.0-next.0",
       "dependencies": {
         "better-sqlite3": "^12.6.2",
         "ws": "^8.19.0",
       },
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
         "@types/better-sqlite3": "^7.6.13",
         "@types/node": "^24.10.9",
@@ -309,14 +309,14 @@
         "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
+        "@evolu/common": "^8.0.0-next.0",
       },
     },
     "packages/react": {
       "name": "@evolu/react",
-      "version": "10.4.0",
+      "version": "11.0.0-next.0",
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
@@ -324,13 +324,13 @@
         "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
+        "@evolu/common": "^8.0.0-next.0",
         "react": ">=19",
       },
     },
     "packages/react-native": {
       "name": "@evolu/react-native",
-      "version": "14.3.0",
+      "version": "15.0.0-next.0",
       "dependencies": {
         "array-from-async": "^3.0.0",
         "array.prototype.tosorted": "^1.1.4",
@@ -345,8 +345,8 @@
         "set.prototype.union": "^1.1.3",
       },
       "devDependencies": {
-        "@evolu/common": "*",
-        "@evolu/react": "*",
+        "@evolu/common": "8.0.0-next.0",
+        "@evolu/react": "11.0.0-next.0",
         "@evolu/typescript-config": "*",
         "@op-engineering/op-sqlite": "^15.2.2",
         "@types/react": "^19.2.14",
@@ -361,8 +361,8 @@
         "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
-        "@evolu/react": "^10.4.0",
+        "@evolu/common": "^8.0.0-next.0",
+        "@evolu/react": "^11.0.0-next.0",
         "@op-engineering/op-sqlite": ">=12",
         "expo": ">=55",
         "expo-secure-store": ">=55",
@@ -385,11 +385,11 @@
     },
     "packages/react-web": {
       "name": "@evolu/react-web",
-      "version": "2.4.0",
+      "version": "3.0.0-next.0",
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
-        "@evolu/web": "*",
+        "@evolu/web": "3.0.0-next.0",
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
         "react": "^19.2.4",
@@ -398,19 +398,19 @@
         "user-agent-data-types": "^0.4.2",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
-        "@evolu/web": "^2.4.0",
+        "@evolu/common": "^8.0.0-next.0",
+        "@evolu/web": "^3.0.0-next.0",
         "react": ">=19",
         "react-dom": ">=19",
       },
     },
     "packages/svelte": {
       "name": "@evolu/svelte",
-      "version": "2.4.0",
+      "version": "3.0.0-next.0",
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
-        "@evolu/web": "*",
+        "@evolu/web": "3.0.0-next.0",
         "@sveltejs/package": "^2.5.7",
         "@tsconfig/svelte": "^5.0.6",
         "svelte": "^5.48.2",
@@ -418,8 +418,8 @@
         "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
-        "@evolu/web": "^2.4.0",
+        "@evolu/common": "^8.0.0-next.0",
+        "@evolu/web": "^3.0.0-next.0",
         "svelte": ">=5",
       },
     },
@@ -429,26 +429,26 @@
     },
     "packages/vue": {
       "name": "@evolu/vue",
-      "version": "1.4.0",
+      "version": "2.0.0-next.0",
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
         "typescript": "^5.9.3",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
+        "@evolu/common": "^8.0.0-next.0",
         "vue": ">=3.5.24",
       },
     },
     "packages/web": {
       "name": "@evolu/web",
-      "version": "2.4.0",
+      "version": "3.0.0-next.0",
       "dependencies": {
         "@evolu/sqlite-wasm": "2.2.4",
         "idb-keyval": "^6.2.2",
       },
       "devDependencies": {
-        "@evolu/common": "*",
+        "@evolu/common": "8.0.0-next.0",
         "@evolu/typescript-config": "*",
         "@types/sharedworker": "^0.0.221",
         "@types/web-locks-api": "^0.0.5",
@@ -456,7 +456,7 @@
         "user-agent-data-types": "^0.4.2",
       },
       "peerDependencies": {
-        "@evolu/common": "^7.4.1",
+        "@evolu/common": "^8.0.0-next.0",
       },
     },
   },

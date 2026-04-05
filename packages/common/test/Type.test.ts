@@ -55,17 +55,27 @@ import {
   array,
   Base64Url,
   base64UrlToUint8Array,
+  between,
   Boolean,
   brand,
   createFormatTypeError,
   createId,
   createIdAsUuidv7,
   createIdFromString,
+  CurrencyCode,
   Date,
+  dateIsoToDate,
+  dateToDateIso,
   DateIso,
+  EvoluType,
   FiniteNumber,
+  Function as FunctionType,
+  formatBase64UrlError,
+  formatBetweenError,
+  formatJsonError,
   formatRegexError,
   formatStringError,
+  formatTupleError,
   greaterThan,
   greaterThanOrEqualTo,
   Id,
@@ -79,10 +89,13 @@ import {
   Int64String,
   isOptionalType,
   isType,
+  isUnionType,
   Json,
   json,
   JsonArray,
+  jsonToJsonValue,
   JsonValue,
+  jsonValueToJson,
   length,
   lessThan,
   lessThanOrEqualTo,
@@ -90,6 +103,8 @@ import {
   maxLength,
   minLength,
   multipleOf,
+  Mnemonic,
+  Name,
   NegativeInt,
   NegativeNumber,
   NonEmptyString,
@@ -103,6 +118,7 @@ import {
   NonPositiveInt,
   NonPositiveNumber,
   nullableToOptional,
+  Null,
   nullishOr,
   nullOr,
   Number,
@@ -110,6 +126,7 @@ import {
   omit,
   optional,
   partial,
+  parseJson,
   PositiveInt,
   PositiveNumber,
   record,
@@ -121,7 +138,9 @@ import {
   String,
   trimmed,
   TrimmedString,
+  trim,
   tuple,
+  typeErrorToStandardSchemaIssues,
   Uint8Array,
   typed,
   uint8ArrayToBase64Url,
@@ -178,6 +197,21 @@ test("Base Types", () => {
   const date = new globalThis.Date();
   expect(Uint8Array.fromUnknown(date)).toEqual(
     err({ type: "Uint8Array", value: date }),
+  );
+
+  expect(FunctionType.fromUnknown(lazyVoid)).toEqual(ok(lazyVoid));
+  expect(FunctionType.fromUnknown(1)).toEqual(
+    err({ type: "Function", value: 1 }),
+  );
+
+  expect(EvoluType.fromUnknown(String)).toEqual(ok(String));
+  expect(EvoluType.fromUnknown("not a type")).toEqual(
+    err({ type: "EvoluType", value: "not a type" }),
+  );
+
+  expect(CurrencyCode.from("USD")).toEqual(ok("USD"));
+  expect(CurrencyCode.from("usd")).toEqual(
+    err({ type: "CurrencyCode", value: "usd" }),
   );
 
   // TODO: Test other Base Types.
@@ -410,6 +444,11 @@ test("TrimmedString", () => {
 //     "a",
 //   );
 // });
+
+test("trim", () => {
+  expect(trim("  hello  ")).toBe("hello");
+  expect(trim("value")).toBe("value");
+});
 
 test("minLength", () => {
   const Min1String = minLength(1)(String);
@@ -744,6 +783,10 @@ test("Base64Url", () => {
   expectTypeOf(Base64Url.Type).toEqualTypeOf<Base64Url>();
   expectTypeOf(Base64Url.Input).toEqualTypeOf<string>();
   expectTypeOf(Base64Url.Parent).toEqualTypeOf<string>();
+
+  expect(formatBase64UrlError({ type: "Base64Url", value: "AB" })).toContain(
+    "valid Base64Url",
+  );
 });
 
 test("base64UrlToUint8Array/uint8ArrayToBase64Url", () => {
@@ -802,6 +845,24 @@ test("DateIso", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.type).toBe("DateIso");
   }
+
+  const isoResult = dateToDateIso(new globalThis.Date("2020-01-02T03:04:05.000Z"));
+  expect(isoResult).toEqual(ok("2020-01-02T03:04:05.000Z"));
+  if (isoResult.ok) {
+    expect(dateIsoToDate(isoResult.value).toISOString()).toBe(
+      "2020-01-02T03:04:05.000Z",
+    );
+  }
+});
+
+test("Mnemonic", () => {
+  const validMnemonic =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+  expect(Mnemonic.from(validMnemonic)).toEqual(ok(validMnemonic));
+  expect(Mnemonic.from("invalid mnemonic")).toEqual(
+    err({ type: "Mnemonic", value: "invalid mnemonic" }),
+  );
 });
 
 test("SimplePassword", () => {
@@ -907,6 +968,21 @@ test("SimplePassword", () => {
   expectTypeOf(SimplePassword.ParentError).toEqualTypeOf<never>();
 });
 
+test("Name", () => {
+  expect(Name.from("user_name-1")).toEqual(ok("user_name-1"));
+  expect(Name.from("")).toEqual(
+    err({
+      type: "Regex",
+      name: "UrlSafeString",
+      value: "",
+      pattern: /^[A-Za-z0-9_-]+$/,
+    }),
+  );
+  expect(Name.from("x".repeat(65))).toEqual(
+    err({ type: "Name", value: "x".repeat(65) }),
+  );
+});
+
 test("id", () => {
   const deps = testCreateDeps();
 
@@ -916,6 +992,9 @@ test("id", () => {
   const validId = createId(deps);
   expect(UserId.from(validId)).toEqual(ok(validId));
   expect(UserId.fromParent(validId)).toEqual(ok(validId));
+  expect(UserId.fromParent("invalid" as never)).toEqual(
+    err({ type: "TableId", value: "invalid", table: "User" }),
+  );
   expect(UserId.is(validId)).toBe(true);
 
   const invalidIdShort = "short";
@@ -1137,6 +1216,28 @@ test("multipleOf", () => {
 
   expect(MultipleOf3.name).toBe("Brand");
   expect(MultipleOf3.brand).toBe("MultipleOf3");
+});
+
+test("between", () => {
+  const Between1And3 = between(1, 3)(Number);
+
+  expect(Between1And3.from(1)).toEqual(ok(1));
+  expect(Between1And3.from(2)).toEqual(ok(2));
+  expect(Between1And3.from(3)).toEqual(ok(3));
+
+  expect(Between1And3.from(0)).toEqual(
+    err({ type: "Between", value: 0, min: 1, max: 3 }),
+  );
+  expect(Between1And3.from(4)).toEqual(
+    err({ type: "Between", value: 4, min: 1, max: 3 }),
+  );
+
+  expect(Between1And3.name).toBe("Brand");
+  expect(Between1And3.brand).toBe("Between1-3");
+
+  expect(
+    formatBetweenError({ type: "Between", value: 4, min: 1, max: 3 }),
+  ).toContain("not between 1 and 3");
 });
 
 test("literal", () => {
@@ -1524,6 +1625,33 @@ test("record", () => {
   expect(NonEmptyStringToNumber.fromParent({ key: 42 })).toEqual(
     ok({ key: 42 }),
   );
+
+  const NonEmptyStringToPositive = record(NonEmptyString, PositiveNumber);
+
+  expect(NonEmptyStringToPositive.fromParent({ "": 1 } as never)).toEqual(
+    err({
+      type: "Record",
+      value: { "": 1 },
+      reason: {
+        kind: "Key",
+        key: "",
+        error: { type: "MinLength", value: "", min: 1 },
+      },
+    }),
+  );
+
+  expect(NonEmptyStringToPositive.fromParent({ key: 0 } as never)).toEqual(
+    err({
+      type: "Record",
+      value: { key: 0 },
+      reason: {
+        kind: "Value",
+        key: "key",
+        error: { type: "Positive", value: 0 },
+      },
+    }),
+  );
+
   expect(NonEmptyStringToNumber.is({ key: 42 })).toBe(true);
   expect(NonEmptyStringToNumber.is({ "": 42 })).toBe(false);
   expect(NonEmptyStringToNumber.is({ key: "not a number" })).toBe(false);
@@ -1587,6 +1715,18 @@ test("object", () => {
   );
 
   expect(User.name).toBe("Object");
+  expect(User.fromParent({ name: "", age: 30 as PositiveNumber } as never)).toEqual(
+    err({
+      type: "Object",
+      value: { name: "", age: 30 },
+      reason: {
+        kind: "Props",
+        errors: {
+          name: { type: "MinLength", value: "", min: 1 },
+        },
+      },
+    }),
+  );
   expect(User.is({ name: "Alice", age: 30 })).toBe(true);
   expect(User.is({ name: "Alice" })).toBe(false);
 
@@ -1726,6 +1866,62 @@ test("object", () => {
   expectTypeOf(NumberDictionary.ParentError).toEqualTypeOf<
     ObjectWithRecordError<{ length: NumberError }, StringError, NumberError>
   >();
+});
+
+test("object with record fromParent branches", () => {
+  const Dictionary = object(
+    { length: PositiveNumber },
+    record(NonEmptyString, PositiveNumber),
+  );
+
+  expect(Dictionary.fromUnknown({ length: 1, "": 2 })).toEqual(
+    err({
+      type: "ObjectWithRecord",
+      value: { length: 1, "": 2 },
+      reason: {
+        kind: "IndexKey",
+        key: "",
+        error: { type: "MinLength", value: "", min: 1 },
+      },
+    }),
+  );
+
+  expect(Dictionary.fromParent({ length: 1, "": 2 } as never)).toEqual(
+    err({
+      type: "ObjectWithRecord",
+      value: { length: 1, "": 2 },
+      reason: {
+        kind: "IndexKey",
+        key: "",
+        error: { type: "MinLength", value: "", min: 1 },
+      },
+    }),
+  );
+
+  expect(Dictionary.fromParent({ length: 1, validKey: 0 } as never)).toEqual(
+    err({
+      type: "ObjectWithRecord",
+      value: { length: 1, validKey: 0 },
+      reason: {
+        kind: "IndexValue",
+        key: "validKey",
+        error: { type: "Positive", value: 0 },
+      },
+    }),
+  );
+
+  expect(Dictionary.fromParent({ length: 0, validKey: 2 } as never)).toEqual(
+    err({
+      type: "ObjectWithRecord",
+      value: { length: 0, validKey: 2 },
+      reason: {
+        kind: "Props",
+        errors: {
+          length: { type: "Positive", value: 0 },
+        },
+      },
+    }),
+  );
 });
 
 test("union", () => {
@@ -1932,6 +2128,8 @@ test("recursive", () => {
     expect(validResult.value).toEqual(validCategory);
   }
 
+  expect(Category.fromParent(validCategory as never)).toEqual(ok(validCategory));
+
   expect(Category.name).toBe("Recursive");
 
   const invalidResult1 = Category.fromUnknown({ name: 123, subcategories: [] });
@@ -2094,6 +2292,31 @@ test("tuple", () => {
     }),
   );
 
+  expect(TupleOfStringAndNumber.fromParent(["hello", 42])).toEqual(
+    ok(["hello", 42]),
+  );
+
+  expect(TupleOfStringAndNumber.fromParent(["hello"] as never)).toEqual(
+    err({
+      type: "Tuple",
+      value: ["hello"],
+      reason: { kind: "InvalidLength", expected: 2 },
+    }),
+  );
+
+  const TupleWithParentChecks = tuple(String, PositiveNumber);
+  expect(TupleWithParentChecks.fromParent(["hello", 0] as never)).toEqual(
+    err({
+      type: "Tuple",
+      value: ["hello", 0],
+      reason: {
+        kind: "Element",
+        index: 1,
+        error: { type: "Positive", value: 0 },
+      },
+    }),
+  );
+
   expect(TupleOfStringAndNumber.is(["hello", 42])).toBe(true);
   expect(TupleOfStringAndNumber.is(["hello", "world"])).toBe(false);
 
@@ -2152,6 +2375,22 @@ test("tuple", () => {
       number & Brand<"Positive"> & Brand<"NonNegative">,
     ]
   >();
+});
+
+test("formatTupleError element branch", () => {
+  const formatTypeError = createFormatTypeError();
+
+  expect(
+    formatTupleError(formatTypeError)({
+      type: "Tuple",
+      value: ["valid", "invalid"],
+      reason: {
+        kind: "Element",
+        index: 1,
+        error: { type: "Number", value: "invalid" },
+      },
+    }),
+  ).toContain("Invalid element at index 1");
 });
 
 test("JsonValue", () => {
@@ -2375,6 +2614,36 @@ test("Json normalization edge cases", () => {
   }
 });
 
+test("parseJson and JSON helper conversions", () => {
+  expect(parseJson('{"a":1}')).toEqual(ok({ a: 1 }));
+
+  const parseError = parseJson("{");
+  expect(parseError.ok).toBe(false);
+  if (!parseError.ok) {
+    expect(parseError.error.type).toBe("Json");
+    expect(formatJsonError(parseError.error)).toContain("Invalid JSON");
+  }
+
+  const jsonValueResult = JsonValue.from({
+    a: 1,
+    nested: [true, null, "x"],
+  });
+  assert(jsonValueResult.ok);
+  const jsonValue = jsonValueResult.value;
+  const encoded = jsonValueToJson(jsonValue);
+  expect(encoded).toBe('{"a":1,"nested":[true,null,"x"]}');
+  expect(jsonToJsonValue(encoded)).toEqual(jsonValue);
+});
+
+test("isUnionType and isOptionalType", () => {
+  expect(isUnionType(union(String, Number))).toBe(true);
+  expect(isUnionType(String)).toBe(false);
+
+  expect(isOptionalType(optional(String))).toBe(true);
+  expect(isOptionalType(String)).toBe(false);
+  expect(isOptionalType(null)).toBe(false);
+});
+
 test("Int64", () => {
   const minInt64 = -9223372036854775808n;
   const maxInt64 = 9223372036854775807n;
@@ -2537,6 +2806,15 @@ test("partial", () => {
   expectTypeOf(PartialUser.ParentError).toEqualTypeOf<
     ObjectError<{ name: StringError; age: NumberError | NonNegativeError }>
   >();
+
+  const inheritedProps = Object.create({ inherited: String }) as Record<
+    string,
+    AnyType
+  >;
+  inheritedProps.own = PositiveNumber;
+  const PartialOwnOnly = partial(inheritedProps);
+  expect(PartialOwnOnly.from({ own: 1 })).toEqual(ok({ own: 1 }));
+  expect(("inherited" in PartialOwnOnly.props)).toBe(false);
 });
 
 test("nullableToOptional", () => {
@@ -2554,6 +2832,17 @@ test("nullableToOptional", () => {
   }>();
   expect(TransformedUser.props.name).toBe(String);
   expect(isOptionalType(TransformedUser.props.age)).toBe(true);
+
+  const Transformed = nullableToOptional({
+    age: union(Null, String),
+    role: union(String, Number),
+    name: String,
+  });
+  expect(isOptionalType(Transformed.props.age)).toBe(true);
+  expect(isOptionalType(Transformed.props.role)).toBe(false);
+  expect(Transformed.from({ name: "Alice", role: "admin" })).toEqual(
+    ok({ name: "Alice", role: "admin" }),
+  );
 });
 
 test("omit - single key", () => {
@@ -2674,6 +2963,229 @@ test("createFormatTypeError", () => {
   expect(formatTypeErrorWithCustomError(nameResult.error)).toBe("name");
 });
 
+test("createFormatTypeError remaining switch branches", () => {
+  const formatTypeError = createFormatTypeError();
+
+  const cases: ReadonlyArray<readonly [unknown, string]> = [
+    [{ type: "BigInt", value: 1 }, "bigint"],
+    [{ type: "Boolean", value: "x" }, "boolean"],
+    [{ type: "Undefined", value: 1 }, "undefined"],
+    [{ type: "Null", value: 1 }, "null"],
+    [{ type: "Function", value: 1 }, "function"],
+    [{ type: "Uint8Array", value: 1 }, "uint8array"],
+    [{ type: "InstanceOf", value: {}, ctor: "User" }, "instance of User"],
+    [{ type: "EvoluType", value: 1 }, "valid Evolu Type"],
+    [{ type: "CurrencyCode", value: "cz" }, "Invalid currency code"],
+    [{ type: "DateIso", value: "invalid" }, "ISO 8601"],
+    [{ type: "Trimmed", value: " x" }, "must be trimmed"],
+    [{ type: "MinLength", value: "x", min: 2 }, "minimum length of 2"],
+    [{ type: "MaxLength", value: "xyz", max: 2 }, "maximum length of 2"],
+    [{ type: "Length", value: "xyz", exact: 2 }, "required length of 2"],
+    [{ type: "Mnemonic", value: "invalid" }, "Invalid BIP39 mnemonic"],
+    [
+      {
+        type: "Regex",
+        name: "Alpha",
+        value: "123",
+        pattern: /^[A-Za-z]+$/,
+      },
+      "does not match the pattern",
+    ],
+    [{ type: "Id", value: "bad" }, "valid Id"],
+    [{ type: "TableId", value: "bad", table: "User" }, "table User"],
+    [{ type: "Positive", value: 0 }, "positive"],
+    [{ type: "Negative", value: 0 }, "negative"],
+    [{ type: "NonPositive", value: 1 }, "non-positive"],
+    [{ type: "NonNegative", value: -1 }, "non-negative"],
+    [{ type: "Int", value: 1.5 }, "integer"],
+    [{ type: "GreaterThan", value: 1, min: 2 }, "not > 2"],
+    [{ type: "LessThan", value: 2, max: 1 }, "not < 1"],
+    [
+      { type: "GreaterThanOrEqualTo", value: 1, min: 2 },
+      "not >= 2",
+    ],
+    [{ type: "LessThanOrEqualTo", value: 2, max: 1 }, "not <= 1"],
+    [{ type: "NonNaN", value: NaN }, "must not be NaN"],
+    [{ type: "Finite", value: Infinity }, "must be finite"],
+    [{ type: "MultipleOf", value: 5, divisor: 3 }, "multiple of 3"],
+    [{ type: "Between", value: 5, min: 1, max: 3 }, "between 1 and 3"],
+    [{ type: "Literal", value: "x", expected: "y" }, "expected literal"],
+    [{ type: "Int64", value: 1n << 63n }, "64-bit signed integer"],
+    [{ type: "Int64String", value: "abc" }, "valid Int64 string"],
+    [{ type: "Json", value: "{", message: "SyntaxError" }, "Invalid JSON"],
+    [
+      {
+        type: "SimplePassword",
+        value: "short",
+        parentError: { type: "MinLength", value: "short", min: 8 },
+      },
+      "Invalid password",
+    ],
+    [
+      { type: "Array", value: "x", reason: { kind: "NotArray" } },
+      "Expected an array",
+    ],
+    [
+      {
+        type: "Array",
+        value: ["x"],
+        reason: {
+          kind: "Element",
+          index: 0,
+          error: { type: "Number", value: "x" },
+        },
+      },
+      "Invalid element at index 0",
+    ],
+    [
+      { type: "Set", value: "x", reason: { kind: "NotSet" } },
+      "Expected a Set",
+    ],
+    [
+      {
+        type: "Set",
+        value: new globalThis.Set(["x"]),
+        reason: {
+          kind: "Element",
+          index: 0,
+          error: { type: "Number", value: "x" },
+        },
+      },
+      "Invalid element at index 0",
+    ],
+    [
+      {
+        type: "Record",
+        value: 1,
+        reason: { kind: "NotRecord" },
+      },
+      "Expected a record",
+    ],
+    [
+      {
+        type: "Record",
+        value: { "": 1 },
+        reason: {
+          kind: "Key",
+          key: "",
+          error: { type: "MinLength", value: "", min: 1 },
+        },
+      },
+      "Invalid key",
+    ],
+    [
+      {
+        type: "Record",
+        value: { key: "x" },
+        reason: {
+          kind: "Value",
+          key: "key",
+          error: { type: "Number", value: "x" },
+        },
+      },
+      "Invalid value for key key",
+    ],
+    [
+      {
+        type: "Object",
+        value: 1,
+        reason: { kind: "NotObject" },
+      },
+      "Expected a plain object",
+    ],
+    [
+      {
+        type: "Object",
+        value: { a: 1, extra: 2 },
+        reason: { kind: "ExtraKeys", extraKeys: ["extra"] },
+      },
+      "Unexpected extra keys: extra",
+    ],
+    [
+      {
+        type: "Object",
+        value: { name: 1 },
+        reason: {
+          kind: "Props",
+          errors: {
+            name: { type: "String", value: 1 },
+          },
+        },
+      },
+      "Invalid object properties",
+    ],
+    [
+      {
+        type: "ObjectWithRecord",
+        value: 1,
+        reason: { kind: "NotObject" },
+      },
+      "Expected an object",
+    ],
+    [
+      {
+        type: "ObjectWithRecord",
+        value: { name: 1 },
+        reason: {
+          kind: "Props",
+          errors: {
+            name: { type: "String", value: 1 },
+          },
+        },
+      },
+      "Invalid object properties",
+    ],
+    [
+      {
+        type: "ObjectWithRecord",
+        value: { dynamic: "x" },
+        reason: {
+          kind: "IndexKey",
+          key: "",
+          error: { type: "MinLength", value: "", min: 1 },
+        },
+      },
+      "Invalid index key",
+    ],
+    [
+      {
+        type: "ObjectWithRecord",
+        value: { dynamic: "x" },
+        reason: {
+          kind: "IndexValue",
+          key: "dynamic",
+          error: { type: "Number", value: "x" },
+        },
+      },
+      "Invalid value at index key dynamic",
+    ],
+    [
+      {
+        type: "Union",
+        value: true,
+        errors: [{ type: "String", value: true }, { type: "Number", value: true }],
+      },
+      "does not match any member of the union",
+    ],
+    [
+      {
+        type: "Tuple",
+        value: [1],
+        reason: { kind: "InvalidLength", expected: 2 },
+      },
+      "Expected a tuple of length 2",
+    ],
+  ];
+
+  for (const [inputError, expectedMessagePart] of cases) {
+    expect(formatTypeError(inputError as never)).toContain(expectedMessagePart);
+  }
+
+  expect(
+    formatTypeError({ type: "UnknownType", value: 42 } as never),
+  ).toBe("A value 42 is not valid for type UnknownType.");
+});
+
 test("custom formatTypeError written from scratch", () => {
   // Demonstrates writing a custom error formatter from scratch,
   // without using createFormatTypeError.
@@ -2772,6 +3284,7 @@ test("json Type Factory", () => {
   expectTypeOf(personJson).toEqualTypeOf<string & Brand<"PersonJson">>();
 
   expect(personJsonToPerson(personJson)).toEqual(person);
+  expect(PersonJson.fromUnknown(personJson)).toEqual(ok(personJson));
 
   // Test StringError: input is not a string
   expect(PersonJson.fromUnknown(42)).toEqual(
@@ -3101,6 +3614,261 @@ describe("Standard Schema V1", () => {
         ],
       }
     `);
+  });
+
+  test("typeErrorToStandardSchemaIssues covers composite branches", () => {
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Array",
+          value: "not-array",
+          reason: { kind: "NotArray" },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message:
+          '{"type":"Array","value":"not-array","reason":{"kind":"NotArray"}}',
+        path: ["root"],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Array",
+          value: ["x"],
+          reason: {
+            kind: "Element",
+            index: 0,
+            error: { type: "Number", value: "x" },
+          },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Number","value":"x"}',
+        path: ["root", 0],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Object",
+          value: "not-object",
+          reason: { kind: "NotObject" },
+        } as never,
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Object","value":"not-object","reason":{"kind":"NotObject"}}',
+        path: [],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Object",
+          value: { a: 1, extra: 2 },
+          reason: { kind: "ExtraKeys", extraKeys: ["extra"] },
+        } as never,
+      ),
+    ).toEqual([
+      {
+        message:
+          '{"type":"Object","value":{"a":1,"extra":2},"reason":{"kind":"ExtraKeys","extraKeys":["extra"]}}',
+        path: [],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Set",
+          value: "not-set",
+          reason: { kind: "NotSet" },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Set","value":"not-set","reason":{"kind":"NotSet"}}',
+        path: ["root"],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Set",
+          value: new globalThis.Set(["x"]),
+          reason: {
+            kind: "Element",
+            index: 0,
+            error: { type: "Number", value: "x" },
+          },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Number","value":"x"}',
+        path: ["root", 0],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "ObjectWithRecord",
+          value: { fixed: 1, "": 2 },
+          reason: {
+            kind: "IndexKey",
+            key: "",
+            error: { type: "MinLength", value: "", min: 1 },
+          },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"MinLength","value":"","min":1}',
+        path: ["root", ""],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "ObjectWithRecord",
+          value: { fixed: 1, dynamic: "x" },
+          reason: {
+            kind: "IndexValue",
+            key: "dynamic",
+            error: { type: "Number", value: "x" },
+          },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Number","value":"x"}',
+        path: ["root", "dynamic"],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "ObjectWithRecord",
+          value: "not-object",
+          reason: { kind: "NotObject" },
+        } as never,
+      ),
+    ).toEqual([
+      {
+        message:
+          '{"type":"ObjectWithRecord","value":"not-object","reason":{"kind":"NotObject"}}',
+        path: [],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "ObjectWithRecord",
+          value: { a: 1 },
+          reason: {
+            kind: "Props",
+            errors: {
+              a: { type: "String", value: 1 },
+            },
+          },
+        } as never,
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"String","value":1}',
+        path: ["a"],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Record",
+          value: 42,
+          reason: { kind: "NotRecord" },
+        } as never,
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Record","value":42,"reason":{"kind":"NotRecord"}}',
+        path: [],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Tuple",
+          value: ["a", "b"],
+          reason: {
+            kind: "Element",
+            index: 1,
+            error: { type: "Number", value: "b" },
+          },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      {
+        message: '{"type":"Number","value":"b"}',
+        path: ["root", 1],
+      },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Union",
+          value: true,
+          errors: [{ type: "String", value: true }, { type: "Number", value: true }],
+        } as never,
+      ),
+    ).toEqual([
+      { message: '{"type":"String","value":true}', path: [] },
+      { message: '{"type":"Number","value":true}', path: [] },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Brand",
+          value: "bad",
+          parentError: { type: "String", value: 123 },
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      { message: '{"type":"String","value":123}', path: ["root"] },
+    ]);
+
+    expect(
+      typeErrorToStandardSchemaIssues(
+        {
+          type: "Brand",
+          value: "bad",
+        } as never,
+        ["root"],
+      ),
+    ).toEqual([
+      { message: '{"type":"Brand","value":"bad"}', path: ["root"] },
+    ]);
   });
 
   test("unknown error type falls back to generic message", () => {
