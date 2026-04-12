@@ -1,24 +1,32 @@
 import { Injectable, OnDestroy, inject, signal } from "@angular/core";
-import { InferRow, Mnemonic, Query, Row } from "@evolu/common";
-import { EVOLU } from "./app.config";
+import * as Evolu from "@evolu/common";
+import { EVOLU, EVOLU_ERROR } from "./app.config";
 import { formatTypeError } from "./error-formatter";
-import { TodoId } from "./schema";
+import { Schema, TodoId } from "./schema";
+
+const createAppQuery = Evolu.createQueryBuilder(Schema);
+
+const todosQuery = createAppQuery((db) =>
+  db
+    .selectFrom("todo")
+    .select(["id", "title", "isCompleted"])
+    .where("isDeleted", "is not", Evolu.sqliteTrue)
+    .where("title", "is not", null)
+    .orderBy("createdAt"),
+);
+
+type TodoRow = typeof todosQuery.Row;
+
+const parseTodoTitle = (value: string) =>
+  Evolu.NonEmptyString100.from(value.trim());
 
 @Injectable({ providedIn: "root" })
 export class AppService implements OnDestroy {
   private readonly evolu = inject(EVOLU);
+  private readonly evoluError = inject(EVOLU_ERROR);
   private readonly unsubscribes: Array<() => void> = [];
 
-  private readonly todosQuery = this.evolu.createQuery((db) =>
-    db
-      .selectFrom("todo")
-      .select(["id", "title", "isCompleted"])
-      .where("isDeleted", "is not", 1)
-      .where("title", "is not", null)
-      .orderBy("createdAt"),
-  );
-
-  readonly todos = signal<InferRow<typeof this.todosQuery>[]>([]);
+  readonly todos = signal<Array<TodoRow>>([]);
 
   readonly mnemonic = signal<string | null>(null);
 
@@ -37,47 +45,41 @@ export class AppService implements OnDestroy {
   /** Todos */
 
   addTodo(title: string) {
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle) {
+    const parsedTitle = parseTodoTitle(title);
+    if (!parsedTitle.ok) {
+      alert(formatTypeError(parsedTitle.error));
       return;
     }
 
-    const result = this.evolu.insert("todo", {
-      title: trimmedTitle,
+    this.evolu.insert("todo", {
+      title: parsedTitle.value,
     });
-
-    if (!result.ok) {
-      alert(formatTypeError(result.error));
-    }
   }
 
   renameTodo(id: string, title: string) {
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle) {
+    const parsedTitle = parseTodoTitle(title);
+    if (!parsedTitle.ok) {
+      alert(formatTypeError(parsedTitle.error));
       return;
     }
 
-    const result = this.evolu.update("todo", {
+    this.evolu.update("todo", {
       id: id as TodoId,
-      title: trimmedTitle,
+      title: parsedTitle.value,
     });
-
-    if (!result.ok) {
-      alert(formatTypeError(result.error));
-    }
   }
 
   toggleTodo(id: string, isCompleted: boolean) {
     this.evolu.update("todo", {
       id: id as TodoId,
-      isCompleted: Number(isCompleted),
+      isCompleted: Evolu.booleanToSqliteBoolean(isCompleted),
     });
   }
 
   deleteTodo(id: string) {
     this.evolu.update("todo", {
       id: id as TodoId,
-      isDeleted: Number(true),
+      isDeleted: Evolu.sqliteTrue,
     });
   }
 
@@ -89,17 +91,17 @@ export class AppService implements OnDestroy {
       return;
     }
 
-    const mnemonicResult = Mnemonic.from(trimmedMnemonic);
+    const mnemonicResult = Evolu.Mnemonic.from(trimmedMnemonic);
     if (!mnemonicResult.ok) {
       alert(formatTypeError(mnemonicResult.error));
       return;
     }
 
-    await this.evolu.restoreAppOwner(mnemonicResult.value);
+    alert("Restore AppOwner is not implemented in this example yet.");
   }
 
   async resetAppOwner(): Promise<void> {
-    await this.evolu.resetAppOwner();
+    alert("Reset AppOwner is not implemented in this example yet.");
   }
 
   /** Database */
@@ -129,9 +131,16 @@ export class AppService implements OnDestroy {
   /** App lifecycle */
 
   private initializeData(): void {
-    this.loadAndSubscribeEvoluQuery(this.todosQuery, (rows) =>
-      this.todos.set(rows),
-    )
+    const unsubscribe = this.evolu.subscribeQuery(todosQuery)(() => {
+      this.todos.set([...this.evolu.getQueryRows(todosQuery)]);
+    });
+    this.unsubscribes.push(unsubscribe);
+
+    this.evolu
+      .loadQuery(todosQuery)
+      .then((rows) => {
+        this.todos.set([...rows]);
+      })
       .catch((error) => {
         console.error("Failed to load data:", error);
       })
@@ -139,15 +148,13 @@ export class AppService implements OnDestroy {
   }
 
   private initializeAppOwner(): void {
-    void this.evolu.appOwner.then((owner) => {
-      this.mnemonic.set(owner.mnemonic ?? null);
-    });
+    this.mnemonic.set(this.evolu.appOwner.mnemonic ?? null);
   }
 
   private initializeGlobalErrorHandling(): void {
     // Subscribe to global Evolu errors
-    const unsubscribeError = this.evolu.subscribeError(() => {
-      const error = this.evolu.getError();
+    const unsubscribeError = this.evoluError.subscribe(() => {
+      const error = this.evoluError.get();
       if (!error) return;
 
       console.error("Evolu error:", error);
@@ -155,28 +162,5 @@ export class AppService implements OnDestroy {
     });
 
     this.unsubscribes.push(unsubscribeError);
-  }
-
-  /**
-   * Execute an Evolu query once and subscribe to updates, communicated via the
-   * callback.
-   *
-   * Keeps track of the subscription so it can be cleaned up later.
-   *
-   * @returns A promise that resolves after the initial data is retrieved.
-   */
-  private loadAndSubscribeEvoluQuery<R extends Row>(
-    query: Query<R>,
-    cb: (rows: R[]) => void,
-  ) {
-    const unsubscribe = this.evolu.subscribeQuery(query)(() =>
-      cb([...this.evolu.getQueryRows(query)]),
-    );
-    this.unsubscribes.push(unsubscribe);
-
-    return this.evolu.loadQuery(query).then((rows) => {
-      cb([...rows]);
-      return rows;
-    });
   }
 }

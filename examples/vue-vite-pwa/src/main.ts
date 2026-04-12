@@ -1,5 +1,16 @@
-import { createApp } from "vue";
+import { Suspense, createApp, h } from "vue";
 import App from "./App.vue";
 import "./style.css";
 
-createApp(App).mount("#app");
+createApp({
+	setup: () =>
+		() =>
+			h(
+				Suspense,
+				null,
+				{
+					default: () => h(App),
+					fallback: () => h("div", "Loading Evolu app..."),
+				},
+			),
+}).mount("#app");

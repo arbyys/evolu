@@ -4,6 +4,18 @@
  * @module
  */
 
+declare global {
+  interface Map<K, V> {
+    getOrInsert(key: K, defaultValue: V): V;
+    getOrInsertComputed(key: K, callbackFunction: (key: K) => V): V;
+  }
+
+  interface WeakMap<K extends WeakKey, V> {
+    getOrInsert(key: K, defaultValue: V): V;
+    getOrInsertComputed(key: K, callbackFunction: (key: K) => V): V;
+  }
+}
+
 /**
  * Installs polyfills required by `@evolu/common`.
  *

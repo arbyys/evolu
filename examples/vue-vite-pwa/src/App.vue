@@ -1,273 +1,273 @@
 <script setup lang="ts">
-import {
-  NonEmptyString,
-  NonEmptyString1000,
-  Name,
-  SqliteBoolean,
-  sqliteTrue,
-  createEvolu,
-  createFormatTypeError,
-  id,
-  kysely,
-  maxLength,
-  nullOr,
-  type EvoluSchema,
-  type InferType,
-  type MinLengthError,
-  union,
-} from "@evolu/common";
-import { evoluWebDeps } from "@evolu/web";
-import { provideEvolu, useQuery } from "@evolu/vue";
+import * as Evolu from "@evolu/common";
+import { createEvoluDeps, createRun } from "@evolu/web";
+import { createUseEvolu, provideEvolu, useQuery } from "@evolu/vue";
+import { ref } from "vue";
 
-const TodoId = id("Todo");
-type TodoId = typeof TodoId.Type;
-
-const TodoCategoryId = id("TodoCategory");
-type TodoCategoryIdType = typeof TodoCategoryId.Type;
-
-const NonEmptyString50 = maxLength(50)(NonEmptyString);
-type NonEmptyString50 = typeof NonEmptyString50.Type;
-
-const TodoPriority = union("low", "high");
-type TodoPriority = typeof TodoPriority.Type;
-
-const PriorityList = TodoPriority.members.map(
-  (member: (typeof TodoPriority.members)[number]) => member.expected,
-) as readonly TodoPriority[];
-
-const DatabaseSchema = {
+const Schema = {
   todo: {
-    id: TodoId,
-    title: NonEmptyString1000,
-    isCompleted: nullOr(SqliteBoolean),
-    categoryId: nullOr(TodoCategoryId),
-    priority: TodoPriority,
+    id: Evolu.id("Todo"),
+    title: Evolu.NonEmptyTrimmedString100,
+    isCompleted: Evolu.nullOr(Evolu.SqliteBoolean),
   },
-  todoCategory: {
-    id: TodoCategoryId,
-    name: NonEmptyString50,
-  },
-} satisfies EvoluSchema;
+} satisfies Evolu.EvoluSchema;
 
-type DatabaseSchema = typeof DatabaseSchema;
+const createAppQuery = Evolu.createQueryBuilder(Schema);
 
-const evolu = createEvolu(evoluWebDeps)(DatabaseSchema, {
-  name: Name.orThrow("minimal-example"),
-  // ...(!!import.meta.env.DEV && {
-  //   transports: [{ type: "WebSocket", url: "ws://localhost:4000" }],
-  // }),
+const todosQuery = createAppQuery((db) =>
+  db
+    .selectFrom("todo")
+    .select(["id", "title", "isCompleted"])
+    .where("isDeleted", "is not", Evolu.sqliteTrue)
+    .where("title", "is not", null)
+    .$narrowType<{ title: Evolu.KyselyNotNull }>()
+    .orderBy("createdAt"),
+);
+
+type TodoRow = typeof todosQuery.Row;
+
+const deps = createEvoluDeps();
+
+deps.evoluError.subscribe(() => {
+  const error = deps.evoluError.get();
+  if (!error) return;
+
+  alert("Evolu error occurred. Check the console.");
 });
+
+const run = createRun(deps);
+
+const evolu = await run.orThrow(
+  Evolu.createEvolu(Schema, {
+    appName: Evolu.AppName.orThrow("vue-vite-pwa-minimal"),
+    appOwner: Evolu.testAppOwner,
+
+    ...(import.meta.env.DEV && {
+      transports: [{ type: "WebSocket", url: "ws://localhost:4000" }],
+    }),
+  }),
+);
 
 provideEvolu(evolu);
 
-const todosWithCategories = evolu.createQuery((db) =>
-  db
-    .selectFrom("todo")
-    .select(["id", "title", "isCompleted", "categoryId", "priority"])
-    .where("isDeleted", "is not", 1)
-    .where("title", "is not", null)
-    .$narrowType<{ title: kysely.NotNull }>()
-    .orderBy("createdAt"),
-);
+const useAppEvolu = createUseEvolu(evolu);
+const appEvolu = useAppEvolu();
 
-const todoCategories = evolu.createQuery((db) =>
-  db
-    .selectFrom("todoCategory")
-    .select(["id", "name"])
-    .where("isDeleted", "is not", 1)
-    .where("name", "is not", null)
-    .$narrowType<{ name: kysely.NotNull }>()
-    .orderBy("createdAt"),
-);
+const todos = useQuery(todosQuery);
 
-const allTodos = useQuery(todosWithCategories);
-const allCategories = useQuery(todoCategories);
+const newTodoTitle = ref("");
+const showMnemonic = ref(false);
 
-const { insert, update } = evolu;
+const parseTodoTitle = (value: string) =>
+  Evolu.NonEmptyTrimmedString100.from(value.trim());
 
-const createNewTodo = () => {
-  customPrompt(NonEmptyString1000, "New Todo", (title) => {
-    insert("todo", { title, priority: "low" });
-  });
-};
-
-const createNewCategory = () => {
-  customPrompt(NonEmptyString50, "New Category", (name) => {
-    insert("todoCategory", { name });
-  });
-};
-
-const handleUpdateCategory = (id: TodoId, categoryId: TodoCategoryIdType) => {
-  update("todo", { id, categoryId });
-};
-
-const handleUpdatePriority = (id: TodoId, priority: TodoPriority) => {
-  update("todo", { id, priority });
-};
-
-const handleToggleCompletedClick = (id: TodoId, isCompleted: boolean) => {
-  update("todo", { id, isCompleted: Number(!isCompleted) as 0 | 1 });
-};
-
-const handleRenameTodoClick = (id: TodoId) => {
-  customPrompt(NonEmptyString1000, "New Name", (title) => {
-    update("todo", { id, title });
-  });
-};
-
-const handleRenameCategoryClick = (id: TodoCategoryIdType) => {
-  customPrompt(NonEmptyString50, "New Name", (name) => {
-    update("todoCategory", { id, name });
-  });
-};
-
-const handleDeleteTodoClick = (id: TodoId) => {
-  update("todo", { id, isDeleted: sqliteTrue });
-};
-
-const handleDeleteCategoryClick = (id: TodoCategoryIdType) => {
-  update("todoCategory", { id, isDeleted: sqliteTrue });
-};
-
-const customPrompt = <
-  Type extends typeof NonEmptyString1000 | typeof NonEmptyString50,
->(
-  type: Type,
-  message: string,
-  onSuccess: (value: InferType<Type>) => void,
-): void => {
-  const value = window.prompt(message);
-  if (value == null) return;
-
-  const result = type.from(value);
+const addTodo = () => {
+  const result = parseTodoTitle(newTodoTitle.value);
   if (!result.ok) {
     alert(formatTypeError(result.error));
     return;
   }
-  onSuccess(result.value as never);
+
+  appEvolu.insert(
+    "todo",
+    {
+      title: result.value,
+    },
+    {
+      onComplete: () => {
+        newTodoTitle.value = "";
+      },
+    },
+  );
 };
 
-const formatTypeError = createFormatTypeError<MinLengthError>(
-  (error): string => {
-    switch (error.type) {
-      case "MinLength":
-        return `Minimal length is: ${error.min}`;
-    }
-  },
-);
+const toggleTodo = (id: TodoRow["id"], isCompleted: TodoRow["isCompleted"]) => {
+  appEvolu.update("todo", {
+    id,
+    isCompleted: Evolu.booleanToSqliteBoolean(!(isCompleted === 1)),
+  });
+};
 
-function onCategoryChange(event: Event, id: TodoId) {
-  if (!(event.target instanceof HTMLSelectElement)) return;
+const renameTodo = (id: TodoRow["id"], title: TodoRow["title"]) => {
+  const nextTitle = window.prompt("Edit todo", title);
+  if (nextTitle == null) return;
 
-  handleUpdateCategory(id, event.target.value as unknown as TodoCategoryIdType);
-}
+  const result = parseTodoTitle(nextTitle);
+  if (!result.ok) {
+    alert(formatTypeError(result.error));
+    return;
+  }
 
-function onPriorityChange(event: Event, id: TodoId) {
-  if (!(event.target instanceof HTMLSelectElement)) return;
+  appEvolu.update("todo", { id, title: result.value });
+};
 
-  handleUpdatePriority(id, event.target.value as unknown as TodoPriority);
-}
+const deleteTodo = (id: TodoRow["id"]) => {
+  appEvolu.update("todo", {
+    id,
+    isDeleted: Evolu.sqliteTrue,
+  });
+};
+
+const restoreFromMnemonic = () => {
+  const mnemonic = window.prompt("Enter your mnemonic to restore your data:");
+  if (mnemonic == null) return;
+
+  const result = Evolu.Mnemonic.from(mnemonic.trim());
+  if (!result.ok) {
+    alert(formatTypeError(result.error));
+    return;
+  }
+
+  alert("Restore AppOwner is not implemented in this example yet.");
+};
+
+const resetAppOwner = () => {
+  alert("Reset AppOwner is not implemented in this example yet.");
+};
+
+const downloadDatabase = () => {
+  void appEvolu.exportDatabase().then((data) => {
+    const objectUrl = URL.createObjectURL(
+      new Blob([data], { type: "application/x-sqlite3" }),
+    );
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `${appEvolu.name}.sqlite3`;
+    link.click();
+
+    setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 1000);
+  });
+};
+
+const formatTypeError = Evolu.createFormatTypeError<
+  Evolu.MinLengthError | Evolu.MaxLengthError
+>((error): string => {
+  switch (error.type) {
+    case "MinLength":
+      return `Text must be at least ${error.min} character${error.min === 1 ? "" : "s"} long`;
+    case "MaxLength":
+      return `Text is too long (maximum ${error.max} characters)`;
+  }
+});
 </script>
 
 <template>
-  <main>
-    <h1>Categories</h1>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="category in allCategories" :key="category.id">
-          <td>{{ category.name }}</td>
-          <td>
-            <button @click="handleRenameCategoryClick(category.id)">
-              Rename
-            </button>
-            <button @click="handleDeleteCategoryClick(category.id)">
-              Delete
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+  <main class="page">
+    <section class="card">
+      <h1>Minimal Todo App (Evolu + Vue + Vite + PWA)</h1>
 
-    <button @click="createNewCategory()">Create Category</button>
+      <div class="add-row">
+        <input
+          v-model="newTodoTitle"
+          type="text"
+          placeholder="Add a new todo..."
+          @keydown.enter="addTodo"
+        />
+        <button @click="addTodo">Add</button>
+      </div>
 
-    <h1>Todos</h1>
-    <table>
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Categories</th>
-          <th>Priority</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="todo in allTodos" :key="todo.id">
-          <td :class="{ completed: todo.isCompleted === 1 }">
-            {{ todo.title }}
-          </td>
-          <td>
-            <select
-              :value="todo.categoryId"
-              @change="onCategoryChange($event, todo.id)"
-            >
-              <option
-                v-for="category in allCategories"
-                :value="category.id"
-                :key="category.id"
-              >
-                {{ category.name }}
-              </option>
-            </select>
-          </td>
-          <td>
-            <select
-              :value="todo.priority"
-              @change="onPriorityChange($event, todo.id)"
-            >
-              <option
-                v-for="priority in PriorityList"
-                :value="priority"
-                :key="priority"
-              >
-                {{ priority }}
-              </option>
-            </select>
-          </td>
-          <td>
-            <button
-              @click="
-                handleToggleCompletedClick(todo.id, todo.isCompleted === 1)
-              "
-            >
-              {{ todo.isCompleted ? "Mark Incomplete" : "Mark Complete" }}
-            </button>
-            <button @click="handleRenameTodoClick(todo.id)">Rename</button>
-            <button @click="handleDeleteTodoClick(todo.id)">Delete</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      <ul>
+        <li v-for="todo in todos" :key="todo.id">
+          <label>
+            <input
+              type="checkbox"
+              :checked="todo.isCompleted === 1"
+              @change="toggleTodo(todo.id, todo.isCompleted)"
+            />
+            <span :class="{ completed: todo.isCompleted === 1 }">{{ todo.title }}</span>
+          </label>
 
-    <button @click="createNewTodo()">Create Todo</button>
+          <div class="actions">
+            <button @click="renameTodo(todo.id, todo.title)">Rename</button>
+            <button @click="deleteTodo(todo.id)">Delete</button>
+          </div>
+        </li>
+      </ul>
+    </section>
 
-    <div class="owner-actions">
-      <button @click="evolu.resetAppOwner()">Reset Owner</button>
-    </div>
+    <section class="card">
+      <h2>Account</h2>
+
+      <p>
+        Todos are stored in local SQLite. When you sync across devices, your
+        data is end-to-end encrypted using your mnemonic.
+      </p>
+
+      <div class="actions">
+        <button @click="showMnemonic = !showMnemonic">
+          {{ showMnemonic ? "Hide" : "Show" }} Mnemonic
+        </button>
+        <button @click="restoreFromMnemonic">Restore from Mnemonic</button>
+        <button @click="resetAppOwner">Reset All Data</button>
+        <button @click="downloadDatabase">Download Backup</button>
+      </div>
+
+      <textarea
+        v-if="showMnemonic"
+        :value="appEvolu.appOwner.mnemonic"
+        readonly
+        rows="3"
+      />
+    </section>
   </main>
 </template>
 
 <style>
+.page {
+  margin: 0 auto;
+  max-width: 720px;
+  padding: 1rem;
+}
+
+.card {
+  margin-bottom: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 1rem;
+  text-align: left;
+}
+
+.add-row {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: 1fr auto;
+  margin-bottom: 1rem;
+}
+
+ul {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+label {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .completed {
   text-decoration: line-through;
 }
 
-.owner-actions {
-  margin-top: 2rem;
+textarea {
+  margin-top: 1rem;
+  width: 100%;
 }
 </style>

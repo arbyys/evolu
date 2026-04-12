@@ -2,118 +2,114 @@
 
 import * as Evolu from "@evolu/common";
 import { createEvoluBinding } from "@evolu/react";
-import { evoluReactWebDeps } from "@evolu/react-web";
+import { EvoluIdenticon, createEvoluDeps } from "@evolu/react-web";
 import { IconEdit, IconTrash } from "@tabler/icons-react";
 import clsx from "clsx";
-import { FC, Suspense, use, useState } from "react";
+import { Suspense, use, useState, type FC } from "react";
 
-// Primary keys are branded types, preventing accidental use of IDs across
-// different tables (e.g., a TodoId can't be used where a UserId is expected).
-const TodoId = Evolu.id("Todo");
-type TodoId = typeof TodoId.Type;
-
-// Schema defines database structure with runtime validation.
-// Column types validate data on insert/update/upsert.
-const Schema = {
+const AppSchema = {
   todo: {
-    id: TodoId,
-    // Branded type ensuring titles are non-empty and ≤100 chars.
-    title: Evolu.NonEmptyString100,
-    // SQLite doesn't support the boolean type; it uses 0 and 1 instead.
+    id: Evolu.id("Todo"),
+    title: Evolu.NonEmptyTrimmedString100,
     isCompleted: Evolu.nullOr(Evolu.SqliteBoolean),
   },
 };
 
-// Create Evolu instance for the React web platform.
-const evolu = Evolu.createEvolu(evoluReactWebDeps)(Schema, {
-  appName: Evolu.AppName.orThrow("minimal-example"),
+const createAppQuery = Evolu.createQueryBuilder(AppSchema);
 
-  // ...(process.env.NODE_ENV === "development" && {
-  //   transports: [{ type: "WebSocket", url: "ws://localhost:4000" }],
-  // }),
-});
-
-const { EvoluContext, useEvolu, useQuery } = createEvoluBinding(Schema);
-
-/**
- * Subscribe to unexpected Evolu errors (database, network, sync issues). These
- * should not happen in normal operation, so always log them for debugging. Show
- * users a friendly error message instead of technical details.
- */
-evolu.subscribeError(() => {
-  const error = evolu.getError();
-  if (!error) return;
-
-  alert("🚨 Evolu error occurred! Check the console.");
-  // eslint-disable-next-line no-console
-  console.error(error);
-});
-
-export const EvoluMinimalExample: FC = () => {
-  return (
-    <div className="min-h-screen px-8 py-8">
-      <div className="mx-auto max-w-md">
-        <div className="mb-2 flex items-center justify-between pb-4">
-          <h1 className="w-full text-center text-xl font-semibold text-gray-900">
-            Minimal Todo App
-          </h1>
-        </div>
-
-        <EvoluContext value={evolu}>
-          {/*
-            Suspense delivers great UX (no loading flickers) and DX (no loading
-            states to manage). Highly recommended with Evolu.
-          */}
-          <Suspense>
-            <Todos />
-            <OwnerActions />
-          </Suspense>
-        </EvoluContext>
-      </div>
-    </div>
-  );
-};
-
-// Evolu uses Kysely for type-safe SQL (https://kysely.dev/).
-const todosQuery = evolu.createQuery((db) =>
+const todosQuery = createAppQuery((db) =>
   db
-    // Type-safe SQL: try autocomplete for table and column names.
     .selectFrom("todo")
     .select(["id", "title", "isCompleted"])
-    // Soft delete: filter out deleted rows.
     .where("isDeleted", "is not", Evolu.sqliteTrue)
-    // Like with GraphQL, all columns except id are nullable in queries
-    // (even if defined without nullOr in the schema) to allow schema
-    // evolution without migrations. Filter nulls with where + $narrowType.
     .where("title", "is not", null)
     .$narrowType<{ title: Evolu.KyselyNotNull }>()
-    // Columns createdAt, updatedAt, isDeleted are auto-added to all tables.
     .orderBy("createdAt"),
 );
 
-// Extract the row type from the query for type-safe component props.
 type TodosRow = typeof todosQuery.Row;
 
+const deps = createEvoluDeps({
+  console: Evolu.createConsole({
+    level: "debug",
+    formatter: Evolu.createConsoleFormatter()({
+      timestampFormat: "relative",
+    }),
+  }),
+});
+
+deps.evoluError.subscribe(() => {
+  const error = deps.evoluError.get();
+  if (!error) return;
+
+  alert("Evolu error occurred. Check the console.");
+});
+
+const run = Evolu.createRun(deps);
+
+const { EvoluContext, useEvolu, useQuery } = createEvoluBinding(AppSchema);
+
+export const EvoluMinimalExample: FC = () => (
+  <div className="min-h-screen px-8 py-8">
+    <div className="mx-auto max-w-md">
+      <div className="mb-2 flex items-center justify-between pb-4">
+        <h1 className="w-full text-center text-xl font-semibold text-gray-900">
+          Minimal Todo App
+        </h1>
+      </div>
+
+      <Suspense>
+        <App />
+      </Suspense>
+    </div>
+  </div>
+);
+
+const appPromise = run.orThrow(
+  Evolu.createEvolu(AppSchema, {
+    appName: Evolu.AppName.orThrow("minimal-example"),
+    appOwner: Evolu.testAppOwner,
+
+    ...(process.env.NODE_ENV === "development" && {
+      transports: [{ type: "WebSocket", url: "ws://localhost:4000" }],
+    }),
+  }),
+);
+
+const App: FC = () => (
+  <EvoluContext value={use(appPromise)}>
+    <Todos />
+    <OwnerActions />
+  </EvoluContext>
+);
+
+const parseTodoTitle = (value: string) =>
+  Evolu.NonEmptyTrimmedString100.from(value.trim());
+
 const Todos: FC = () => {
-  // useQuery returns live data - component re-renders when data changes.
   const todos = useQuery(todosQuery);
+
   const { insert } = useEvolu();
   const [newTodoTitle, setNewTodoTitle] = useState("");
 
   const addTodo = () => {
-    const result = insert(
+    const result = parseTodoTitle(newTodoTitle);
+    if (!result.ok) {
+      alert(formatTypeError(result.error));
+      return;
+    }
+
+    insert(
       "todo",
-      { title: newTodoTitle.trim() },
+      {
+        title: result.value,
+      },
       {
         onComplete: () => {
           setNewTodoTitle("");
         },
       },
     );
-
-    if (!result.ok) {
-      alert(formatTypeError(result.error));
-    }
   };
 
   return (
@@ -159,16 +155,18 @@ const TodoItem: FC<{
     const newTitle = window.prompt("Edit todo", title);
     if (newTitle == null) return;
 
-    const result = update("todo", { id, title: newTitle });
+    const result = parseTodoTitle(newTitle);
     if (!result.ok) {
       alert(formatTypeError(result.error));
+      return;
     }
+
+    update("todo", { id, title: result.value });
   };
 
   const handleDeleteClick = () => {
     update("todo", {
       id,
-      // Soft delete with isDeleted flag (CRDT-friendly, preserves sync history).
       isDeleted: Evolu.sqliteTrue,
     });
   };
@@ -213,11 +211,9 @@ const TodoItem: FC<{
 
 const OwnerActions: FC = () => {
   const evolu = useEvolu();
-  const appOwner = use(evolu.appOwner);
 
   const [showMnemonic, setShowMnemonic] = useState(false);
 
-  // Restore owner from mnemonic to sync data across devices.
   const handleRestoreAppOwnerClick = () => {
     const mnemonic = window.prompt("Enter your mnemonic to restore your data:");
     if (mnemonic == null) return;
@@ -228,32 +224,34 @@ const OwnerActions: FC = () => {
       return;
     }
 
-    void evolu.restoreAppOwner(result.value);
+    alert("Restore AppOwner is not implemented in this example yet.");
   };
 
   const handleResetAppOwnerClick = () => {
-    if (confirm("Are you sure? This will delete all your local data.")) {
-      void evolu.resetAppOwner();
-    }
+    alert("Reset AppOwner is not implemented in this example yet.");
   };
 
   const handleDownloadDatabaseClick = () => {
-    void evolu.exportDatabase().then((array) => {
-      const blob = new Blob([array], {
-        type: "application/x-sqlite3",
-      });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "todos.sqlite3";
-      a.click();
-      window.URL.revokeObjectURL(url);
+    void evolu.exportDatabase().then((data: Uint8Array<ArrayBuffer>) => {
+      const objectUrl = URL.createObjectURL(
+        new Blob([data], { type: "application/x-sqlite3" }),
+      );
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${evolu.name}.sqlite3`;
+      link.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(objectUrl);
+      }, 1000);
     });
   };
 
   return (
     <div className="mt-8 rounded-lg bg-white p-6 shadow-sm ring-1 ring-gray-200">
       <h2 className="mb-4 text-lg font-medium text-gray-900">Account</h2>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <OwnerProfile ownerId={evolu.appOwner.id} username="Current Owner" />
+      </div>
       <p className="mb-4 text-sm text-gray-600">
         Todos are stored in local SQLite. When you sync across devices, your
         data is end-to-end encrypted using your mnemonic.
@@ -268,13 +266,13 @@ const OwnerActions: FC = () => {
           className="w-full"
         />
 
-        {showMnemonic && appOwner.mnemonic && (
+        {showMnemonic && (
           <div className="bg-gray-50 p-3">
             <label className="mb-2 block text-xs font-medium text-gray-700">
               Your Mnemonic (keep this safe!)
             </label>
             <textarea
-              value={appOwner.mnemonic}
+              value={evolu.appOwner.mnemonic}
               readOnly
               rows={3}
               className="w-full border-b border-gray-300 bg-white px-2 py-1 font-mono text-xs focus:border-blue-500 focus:outline-none"
@@ -293,6 +291,21 @@ const OwnerActions: FC = () => {
             onClick={handleDownloadDatabaseClick}
           />
         </div>
+      </div>
+    </div>
+  );
+};
+
+const OwnerProfile: FC<{
+  ownerId: Evolu.OwnerId;
+  username: string;
+}> = ({ ownerId, username }) => {
+  return (
+    <div className="flex justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <EvoluIdenticon id={ownerId} />
+        <span className="text-sm font-medium text-gray-900">{username}</span>
+        <span className="text-xs text-gray-500 italic">{ownerId}</span>
       </div>
     </div>
   );
@@ -331,8 +344,7 @@ const Button: FC<{
  * The `createFormatTypeError` function handles both built-in and custom errors,
  * and lets us override default formatting for specific errors.
  *
- * Click on `createFormatTypeError` below to see how to write your own
- * formatter.
+ * Click on `createFormatTypeError` below to see how to write your own formatter.
  */
 const formatTypeError = Evolu.createFormatTypeError<
   Evolu.MinLengthError | Evolu.MaxLengthError
