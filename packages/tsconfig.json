@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "common" },
+    { "path": "lynx" },
     { "path": "web" },
     { "path": "nodejs" },
     { "path": "react" },

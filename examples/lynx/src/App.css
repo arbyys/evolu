@@ -1,0 +1,174 @@
+.Page {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(170deg, #f5efe6 0%, #f9f7f2 45%, #efe9df 100%);
+}
+
+.Scroll {
+  width: 100%;
+  height: 100%;
+}
+
+.Wrapper {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.Header {
+  margin-bottom: 16px;
+}
+
+.Title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.Subtitle {
+  margin-top: 6px;
+  font-size: 14px;
+  color: #4b5563;
+}
+
+.Card {
+  border-radius: 16px;
+  border: 1px solid #e5ded3;
+  background: #fffdf9;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.Row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.Input {
+  flex: 1;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid #d9d1c5;
+  background: #ffffff;
+  color: #1f2937;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.InputCompact {
+  flex: 1;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid #d9d1c5;
+  background: #ffffff;
+  color: #1f2937;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.Hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #b42318;
+}
+
+.Button {
+  min-width: 68px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  border: 1px solid #d9d1c5;
+  background: #f7f1e8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ButtonPrimary {
+  background: #2f6f57;
+  border-color: #2f6f57;
+}
+
+.ButtonDanger {
+  background: #fff0ec;
+  border-color: #f2b8ab;
+}
+
+.ButtonText {
+  font-size: 13px;
+  font-weight: 600;
+  color: #253040;
+}
+
+.ButtonTextPrimary {
+  color: #f8fbf9;
+}
+
+.ButtonTextDanger {
+  color: #8f2418;
+}
+
+.TodoList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.TodoItem {
+  border-radius: 12px;
+  border: 1px solid #ebe4d8;
+  background: #fff;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.TodoTop {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.TodoTitle {
+  flex: 1;
+  font-size: 15px;
+  color: #1f2937;
+}
+
+.TodoTitleCompleted {
+  color: #6b7280;
+  text-decoration: line-through;
+}
+
+.Actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.OwnerText {
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.Mnemonic {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #1f2937;
+}
+
+.Empty {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.Loading {
+  font-size: 14px;
+  color: #4b5563;
+}

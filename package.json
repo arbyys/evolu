@@ -30,6 +30,7 @@
     "examples:toggle-deps": "node ./scripts/toggle-examples-deps.mts",
     "examples:build": "turbo --filter @example/* build",
     "examples:react-nextjs:dev": "turbo --filter @example/react-nextjs dev",
+    "examples:lynx:dev": "turbo --filter @example/lynx dev",
     "examples:react-vite-pwa:dev": "turbo --filter @example/react-vite-pwa dev",
     "examples:svelte-vite-pwa:dev": "turbo --filter @example/svelte-vite-pwa dev",
     "examples:vue-vite-pwa:dev": "turbo --filter @example/vue-vite-pwa dev"

@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/common" },
+    { "path": "./packages/lynx" },
     { "path": "./packages/nodejs" },
     { "path": "./packages/react" },
     { "path": "./packages/react-native" },
