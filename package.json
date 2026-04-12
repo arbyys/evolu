@@ -32,7 +32,8 @@
     "examples:react-nextjs:dev": "turbo --filter @example/react-nextjs dev",
     "examples:react-vite-pwa:dev": "turbo --filter @example/react-vite-pwa dev",
     "examples:svelte-vite-pwa:dev": "turbo --filter @example/svelte-vite-pwa dev",
-    "examples:vue-vite-pwa:dev": "turbo --filter @example/vue-vite-pwa dev"
+    "examples:vue-vite-pwa:dev": "turbo --filter @example/vue-vite-pwa dev",
+    "examples:shared-owner:dev": "turbo --filter @example/shared-owner dev"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
