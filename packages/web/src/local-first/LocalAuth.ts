@@ -38,7 +38,9 @@ export const createWebAuthnStore = (deps: RandomBytesDep): SecureStorage => ({
       options?.webAuthnUserVerification,
       options?.webAuthnAuthenticatorAttachment,
     );
-    const encryptionKey = deriveEncryptionKey(seed);
+    const prfOutput = readPrfOutput(credential);
+    const keySeed = prfOutput ?? seed;
+    const encryptionKey = deriveEncryptionKey(keySeed);
     const encryptedData = encryptAuthResult(deps)(authResult, encryptionKey);
     const credentialId = uint8ArrayToBase64Url(
       new Uint8Array(credential.rawId),
@@ -46,7 +48,7 @@ export const createWebAuthnStore = (deps: RandomBytesDep): SecureStorage => ({
     const metadata = createMetadata();
     await set(
       key,
-      { credentialId, ...encryptedData, metadata },
+      { credentialId, prf: prfOutput !== null, ...encryptedData, metadata },
       getStore(options?.service),
     );
     return { metadata };
@@ -71,32 +73,39 @@ export const createWebAuthnStore = (deps: RandomBytesDep): SecureStorage => ({
       readonly nonce: Base64Url;
       readonly ciphertext: Base64Url;
       readonly credentialId: string;
+      readonly prf?: boolean;
       readonly metadata: SensitiveInfoItem["metadata"];
     }>(key, getStore(options?.service));
     if (!data) {
       return null;
     }
-    try {
-      const credential = await getCredential(deps)(
-        data.credentialId,
-        options?.relyingPartyID,
-        options?.webAuthnUserVerification,
-      );
-      const credentialSeed = extractSeedFromCredential(credential);
-      const encryptionKey = deriveEncryptionKey(credentialSeed);
-      const authResultVal = decryptAuthResult(data, encryptionKey);
-      if (!authResultVal) {
-        return null;
+    const credential = await getCredential(deps)(
+      data.credentialId,
+      options?.relyingPartyID,
+      options?.webAuthnUserVerification,
+    );
+    let keySeed: Uint8Array;
+    if (data.prf) {
+      const prfOutput = readPrfOutput(credential);
+      if (!prfOutput) {
+        throw new WebAuthnAuthError({
+          type: "recoverable",
+          reason: "prf-unsupported",
+        });
       }
-      return {
-        key,
-        service: options?.service ?? "default",
-        value: authResultVal,
-        metadata: data.metadata,
-      };
-    } catch (_error) {
-      return null;
+      keySeed = prfOutput;
+    } else {
+      keySeed = extractSeedFromCredential(credential);
     }
+    const encryptionKey = deriveEncryptionKey(keySeed);
+    const authResultVal = decryptAuthResult(data, encryptionKey);
+    if (!authResultVal) return null;
+    return {
+      key,
+      service: options?.service ?? "default",
+      value: authResultVal,
+      metadata: data.metadata,
+    };
   },
 
   deleteItem: async (key, options) => {
@@ -164,11 +173,11 @@ const createCredential =
       userVerification,
       authenticatorAttachment,
     );
-    const credential = (await navigator.credentials.create(
-      options,
-    )) as PublicKeyCredential | null;
+    const credential = await runCeremony(() =>
+      navigator.credentials.create(options),
+    );
     if (!credential) {
-      throw new Error("Failed to create WebAuthn credential");
+      throw new WebAuthnAuthError({ type: "bug", reason: "unknown" });
     }
     return credential;
   };
@@ -185,11 +194,11 @@ const getCredential =
       relyingPartyID,
       userVerification,
     );
-    const credential = (await navigator.credentials.get(
-      options,
-    )) as PublicKeyCredential | null;
+    const credential = await runCeremony(() =>
+      navigator.credentials.get(options),
+    );
     if (!credential?.response) {
-      throw new Error("Failed to get WebAuthn credential");
+      throw new WebAuthnAuthError({ type: "bug", reason: "unknown" });
     }
     return credential;
   };
@@ -246,6 +255,7 @@ const createCredentialCreationOptions =
         // Included for backwards compatibility. Deprecated in favor of residentKey (true = "required")
         requireResidentKey: true,
       },
+      extensions: { prf: { eval: { first: PRF_SALT } } } as PrfExtensionInputs,
     },
   });
 
@@ -268,6 +278,7 @@ const createCredentialRequestOptions =
           ) as BufferSource,
         },
       ],
+      extensions: { prf: { eval: { first: PRF_SALT } } } as PrfExtensionInputs,
     },
   });
 
@@ -315,3 +326,90 @@ const decryptAuthResult = (
 
 const generateSeed = (deps: RandomBytesDep) => () =>
   deps.randomBytes.create(32);
+
+/**
+ * WebAuthn PRF extension salt. Constant per app; versioned to allow future key
+ * rotation by changing the suffix. The PRF output is deterministic for a given
+ * (credential, salt) pair on the same authenticator.
+ */
+const PRF_SALT = new TextEncoder().encode("evolu-v1");
+
+/** Minimal typing for the PRF extension (not yet in lib.dom.d.ts). */
+type PrfExtensionInputs = AuthenticationExtensionsClientInputs & {
+  prf?: { eval?: { first: BufferSource } };
+};
+type PrfExtensionResults = AuthenticationExtensionsClientOutputs & {
+  prf?: { results?: { first?: ArrayBuffer }; enabled?: boolean };
+};
+
+const readPrfOutput = (credential: PublicKeyCredential): Uint8Array | null => {
+  const ext = credential.getClientExtensionResults() as PrfExtensionResults;
+  const first = ext.prf?.results?.first;
+  return first ? new Uint8Array(first) : null;
+};
+
+/**
+ * Classified WebAuthn ceremony outcome. Browsers collapse most failures into
+ * `NotAllowedError`, so the bucket combines `error.name` with ceremony duration
+ * to disambiguate user cancel vs. timeout vs. environment rejection.
+ */
+export type WebAuthnErrorBucket =
+  | {
+      type: "expected";
+      reason: "user-cancel" | "timeout" | "abort" | "already-registered";
+    }
+  | {
+      type: "recoverable";
+      reason: "prf-unsupported" | "env-rejection" | "constraint" | "not-supported";
+    }
+  | { type: "bug"; reason: "security" | "data" | "unknown" };
+
+export class WebAuthnAuthError extends Error {
+  readonly bucket: WebAuthnErrorBucket;
+
+  constructor(bucket: WebAuthnErrorBucket, cause?: unknown) {
+    super(
+      `WebAuthn ${bucket.type}: ${bucket.reason}`,
+      cause !== undefined ? { cause } : undefined,
+    );
+    this.name = "WebAuthnAuthError";
+    this.bucket = bucket;
+  }
+}
+
+const classifyWebAuthnError = (
+  error: unknown,
+  durationMs: number,
+): WebAuthnErrorBucket => {
+  const name = (error as { name?: string } | null)?.name;
+  if (name === "SecurityError") return { type: "bug", reason: "security" };
+  if (name === "DataError") return { type: "bug", reason: "data" };
+  if (name === "NotSupportedError")
+    return { type: "recoverable", reason: "not-supported" };
+  if (name === "ConstraintError")
+    return { type: "recoverable", reason: "constraint" };
+  if (name === "AbortError") return { type: "expected", reason: "abort" };
+  if (name === "InvalidStateError")
+    return { type: "expected", reason: "already-registered" };
+  if (name === "NotAllowedError") {
+    if (durationMs < 1_000)
+      return { type: "recoverable", reason: "env-rejection" };
+    if (durationMs > 30_000) return { type: "expected", reason: "timeout" };
+    return { type: "expected", reason: "user-cancel" };
+  }
+  return { type: "bug", reason: "unknown" };
+};
+
+const runCeremony = async (
+  fn: () => Promise<Credential | null>,
+): Promise<PublicKeyCredential | null> => {
+  const start = performance.now();
+  try {
+    return (await fn()) as PublicKeyCredential | null;
+  } catch (error) {
+    throw new WebAuthnAuthError(
+      classifyWebAuthnError(error, performance.now() - start),
+      error,
+    );
+  }
+};
